@@ -1,0 +1,1383 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<!--
+  Viewport is modified to be mobile-friendly and disable browser zooming,
+  allowing our custom pinch-to-zoom to work without interference.
+-->
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+<title>TacticsBoard (Final Base)</title>
+<style>
+:root{
+  --bg1:#060617; --bg2:#1a0433; --panel:#081226; --accent:#4b0082; --light:#ffffff;
+  --light-text: #e6eef8;
+  --dim-text: #9fb0c9;
+}
+html,body{
+  height:100%;
+  width: 100vw;
+  margin:0;
+  padding: 0;
+  background:linear-gradient(180deg,var(--bg2),var(--bg1));
+  color:var(--light-text);
+  font-family:Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial;
+  /* overflow: hidden; */ /* Allow scrolling on the page */
+}
+.wrap{
+  max-width:980px;
+  margin:12px auto;
+  padding:12px;
+  display:flex;
+  flex-direction:column;
+  gap:12px;
+  align-items:center;
+}
+h1{margin:0;font-size:18px}
+.container{
+  display:flex;
+  gap:16px;
+  align-items:flex-start;
+  flex-wrap:wrap;
+  justify-content:center;
+  width: 100%;
+}
+.stage{
+  width:100%;
+  display:flex;
+  flex-direction: column; /* To stack status bar */
+  align-items: center;
+  justify-content:center;
+}
+.board-holder{
+  position:relative;
+  margin-bottom:18px;
+  overflow:hidden;
+  touch-action: none; /* Critical for custom pan/zoom */
+}
+.canvas-wrap{
+  position:relative;
+  width:100%;
+  height:100%;
+  transform-origin:center center;
+  /* transform is now controlled by JS (for pan/zoom) */
+}
+canvas{
+  border-radius:8px;
+  box-shadow:0 12px 40px rgba(0,0,0,0.5);
+  display:block;
+  user-select:none;
+  -webkit-user-select:none;
+}
+#overlay{
+  position:absolute;
+  left:0;
+  top:0;
+  touch-action:none;
+  z-index:30;
+}
+.panel{
+  width:360px;
+  background:var(--panel);
+  padding:12px;
+  border-radius:10px;
+  box-shadow:0 8px 26px rgba(0,0,0,0.6);
+}
+.row{display:flex;gap:8px;align-items:center;margin-bottom:8px}
+
+/* Using the button styles from the original Chess_l.html file */
+button,select,input[type=text],input[type=color],textarea{
+  background:transparent;
+  border:1px solid rgba(255,255,255,0.06);
+  color:var(--light);
+  padding:8px;
+  border-radius:6px;
+  font-family: Inter, system-ui;
+  font-size: 14px;
+}
+button {
+  cursor: pointer;
+  background: rgba(255,255,255,0.02);
+  transition: background 0.2s;
+}
+button:hover {
+  background: rgba(255,255,255,0.08);
+}
+button:active, button.active {
+  background: var(--accent);
+}
+
+.small{font-size:13px;color:var(--dim-text)}
+.controls-flex{display:flex;gap:6px;flex-wrap:wrap}
+.playerBox{display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap}
+.playerBox input{background:transparent;border:1px solid rgba(255,255,255,0.04);padding:6px;border-radius:6px;color:var(--light)}
+.history{max-height:160px;overflow:auto;margin-top:8px;border-top:1px dashed rgba(255,255,255,0.03);padding-top:8px}
+.hotkeys{margin-top:8px;color:var(--dim-text);font-size:13px}
+#removeToggle.active{background:var(--accent)}
+
+/* --- NEW: Status Bar Style --- */
+#status-bar {
+  width: 100%; /* Will be sized by .stage */
+  background-color: var(--panel);
+  opacity: 0.8;
+  color: white;
+  padding: 0.5rem 1rem;
+  border-radius: 0.5rem 0.5rem 0 0;
+  font-weight: 600;
+  text-align: center;
+  z-index: 10;
+  display: none; /* Hidden by default, shown by JS */
+  border-bottom: 1px solid var(--accent);
+  box-sizing: border-box; /* Important */
+}
+
+/* --- NEW: Message Box Style --- */
+#message-box {
+  position: fixed;
+  top: -150px; /* Start off-screen */
+  left: 50%;
+  transform: translateX(-50%);
+  background-color: #4CAF50;
+  color: white;
+  padding: 1rem 2rem;
+  border-radius: 0.5rem;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+  z-index: 1000;
+  transition: top 0.5s ease-out;
+  font-weight: 600;
+  display: none; /* Start hidden */
+}
+#message-box.error {
+  background-color: #F44336;
+}
+#message-box.show {
+  display: block;
+  top: 20px;
+}
+
+/* --- NEW: Promotion Modal Style --- */
+#promotion-modal {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0,0,0,0.7);
+  backdrop-filter: blur(5px);
+  z-index: 2000;
+  display: none; /* Hidden by default */
+  justify-content: center;
+  align-items: center;
+}
+#promotion-modal.show {
+  display: flex;
+}
+#promotion-box {
+  background-color: var(--panel);
+  border-radius: 0.5rem;
+  padding: 1.5rem;
+  border: 1px solid var(--accent);
+  display: flex;
+  gap: 1rem;
+}
+/* This button style is for the promotion modal */
+.promo-btn {
+  background-color: var(--accent);
+  color: white;
+  padding: 8px 12px;
+  border-radius: 6px;
+  text-align: center;
+  cursor: pointer;
+  font-weight: 600;
+  transition: all 0.2s ease;
+  border: 1px solid #7a3fb8;
+  white-space: nowrap;
+  font-size: 40px; /* Big glyphs */
+  width: 70px;
+  height: 70px;
+  line-height: 50px;
+}
+.promo-btn:hover {
+  background-color: #5e0f9b;
+}
+
+
+.zoom-overlay { position:absolute; right:8px; top:8px; z-index:80; background:rgba(0,0,0,0.28); padding:6px; border-radius:8px; }
+
+@media(min-width:980px){
+  .board-holder{width:600px}
+  .stage { max-width: 600px; }
+}
+@media(max-width:720px){
+  .container{flex-direction:column;align-items:center}
+  .panel{width:92vw}
+  .stage { width: 92vw; }
+}
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>TacticsBoard (Final Base)</h1>
+    <div class="small">Final build: Full rules, cinematic animation, TRUE transparent export, and pinch-to-zoom.</div>
+
+    <div class="container">
+      <div class="stage" id="stage">
+
+        <!-- NEW: Status Bar -->
+        <div id="status-bar">Loading...</div>
+
+        <div class="board-holder" id="boardHolder">
+          <div class="canvas-wrap" id="canvasWrap">
+            <canvas id="boardCanvas" aria-label="Chess board"></canvas>
+            <canvas id="overlay" aria-hidden="false"></canvas>
+          </div>
+          <div class="zoom-overlay" id="zoomHint" style="display:none;color:#e6eef8;font-size:12px">Double-tap to unzoom</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="playerBox">
+          <input id="whiteName" type="text" placeholder="White name" value="White" class="small">
+          <input id="whiteElo" type="text" placeholder="ELO" value="1600" style="width:80px" class="small">
+          <input id="whiteFlag" type="text" placeholder="🇮🇳" value="🇮🇳" style="width:56px" class="small">
+        </div>
+
+        <div class="playerBox">
+          <input id="blackName" type="text" placeholder="Black name" value="Black" class="small">
+          <input id="blackElo" type="text" placeholder="ELO" value="1650" style="width:80px" class="small">
+          <input id="blackFlag" type="text" placeholder="🇺🇸" value="🇺🇸" style="width:56px" class="small">
+        </div>
+
+        <div class="row">
+          <label>Mode:</label>
+          <select id="mode">
+            <option value="move">Move (drag)</option>
+            <option value="arrow">Draw Arrow (Shift+drag)</option>
+            <option value="highlight">Highlight (Alt+click)</option>
+          </select>
+          <label>Color</label>
+          <input id="color" type="color" value="#6b2fa3">
+          <button id="clearAll">Clear</button>
+        </div>
+
+        <div class="row controls-flex">
+          <button id="undo">Undo</button>
+          <button id="redo">Redo</button>
+          <button id="flip">Flip</button>
+          <button id="playAnim">Play Animation</button>
+          <button id="exportAnim">Export Animation</button>
+          <button id="reset">Reset</button>
+          <button id="removeToggle">Remove Piece</button>
+        </div>
+
+        <div style="margin-top:8px">
+          <label class="small">Notes (for export)</label>
+          <textarea id="notes" style="width:100%;box-sizing: border-box;height:64px;"></textarea>
+        </div>
+
+        <div class="history" id="historyList"></div>
+        <div class="hotkeys">Hotkeys: M=Move, A=Arrow, H=Highlight, C=Clear, F=Flip. Space = Play.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- NEW: Message Box -->
+  <div id="message-box"></div>
+
+  <!-- NEW: Pawn Promotion Modal -->
+  <div id="promotion-modal">
+      <div id="promotion-box">
+          <!-- Pieces will be injected by JS -->
+      </div>
+  </div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.12.0/chess.min.js"></script>
+
+<script>
+/*
+  Chess_l_final.html
+  - This is the user's trusted 'Chess_l.html' file, with fixes and upgrades.
+  - FINAL FIX (Export): Restored drawing the board/pieces to the export
+    to create a "cinematic shot" not a "transparent asset".
+  - PADDING FIX: Margin changed from 0.85 to 0.5 for tighter zoom.
+  - All other features (Pinch/Zoom, Status Bar, Pro Modal, Original Pieces) are intact.
+*/
+
+/* ---------------- CONFIG ---------------- */
+const LOGICAL_SIZE = 600;
+const PIECE_SCALE = 1.08;      // (from Chess_l.html)
+const ANIM_DURATION_MS = 1500; // (from Chess_l.html)
+const EXPORT_FPS = 30;         // (from Chess_l.html)
+const EXPORT_SIZE = 720;       // (from Chess_l.html)
+
+/* ---------------- DOM ---------------- */
+const boardCanvas = document.getElementById('boardCanvas');
+const overlay = document.getElementById('overlay');
+const boardHolder = document.getElementById('boardHolder');
+const canvasWrap = document.getElementById('canvasWrap');
+const zoomHint = document.getElementById('zoomHint');
+const ctx = boardCanvas.getContext('2d');
+const octx = overlay.getContext('2d');
+
+// NEW: UI DOM Elements
+const statusBar = document.getElementById('status-bar');
+const messageBox = document.getElementById('message-box');
+const promotionModal = document.getElementById('promotion-modal');
+const promotionBox = document.getElementById('promotion-box');
+
+
+/* ---------------- STATE ---------------- */
+let game = null;
+let arrows = [], highlights = [];
+let selectedSquare = null;
+let dragging = null;
+let boardFlipped = false;
+let removeMode = false;
+let lastMoveRecord = null; // {from,to,piece?,color?,type?}
+let prevBoardSnapshot = null; // snapshot BEFORE last move (used for export)
+let prevMovingPieceInfo = null; // {type,color}
+let animHideSquare = null; // square whose piece is currently mid-flight in an animation (hide the static copy)
+const pieceTypes = ['k','q','r','b','n','p'];
+const pieceImages = { w: {}, b: {} };
+const PIECE_LOAD_TIMEOUT = 1200;
+
+// NEW: State for Pan/Zoom
+let viewTransform = { scale: 1, panX: 0, panY: 0 };
+let isPanning = false;
+let isPinching = false;
+let lastPinchDist = 0;
+let panStart = { x: 0, y: 0 };
+let lastPan = { x: viewTransform.panX, y: viewTransform.panY };
+let activePointers = new Map(); // For multi-touch tracking
+
+// NEW: State for UI
+let promotionCallback = null; // To store the promotion choice function
+
+/* ---------------- PIECES (Original Chess_l.html method) ---------------- */
+function makePieceSvgData(type, color){
+  const fill = color === 'w' ? '#ffffff' : '#0f0f0f';
+  const stroke = color === 'w' ? 'rgba(0,0,0,0.35)' : 'rgba(255,255,255,0.06)';
+  const glyphMap = {'p':'♟','r':'♜','n':'♞','b':'♝','q':'♛','k':'♚'};
+  const glyph = glyphMap[type];
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="600" height="600" viewBox="0 0 600 600">
+  <style>.g{font-family: "DejaVu Serif", "Times New Roman", serif; font-size:420px; dominant-baseline:middle; text-anchor:middle;}</style>
+  <rect width="100%" height="100%" fill="none"/>
+  <g transform="translate(300,330)"><text class="g" fill="${fill}" stroke="${stroke}" stroke-width="8">${glyph}</text></g></svg>`;
+  return 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
+}
+
+function preloadPieceImages(cb){
+  let total = 0, loaded = 0, timed = false;
+  for(const color of ['w','b']){
+    for(const t of pieceTypes){
+      total++;
+      const img = new Image();
+      img.onload = () => { loaded++; pieceImages[color][t] = img; if(loaded === total && !timed) cb(); };
+      img.onerror = ()=>{ loaded++; pieceImages[color][t] = img; if(loaded === total && !timed) cb(); };
+      img.src = makePieceSvgData(t, color);
+    }
+  }
+  setTimeout(()=>{ if(loaded < total) { timed = true; cb(); } }, PIECE_LOAD_TIMEOUT);
+}
+
+/* ---------------- SIZING (Original Chess_l.html method) ---------------- */
+function sizeBoardExplicit(){
+  const maxW = 600;
+  // Use stage width for responsive sizing
+  const stageW = document.getElementById('stage').clientWidth;
+  const displayPx = Math.max(120, Math.min(maxW, Math.floor(stageW)));
+
+  boardHolder.style.width = displayPx + 'px';
+  boardHolder.style.height = displayPx + 'px';
+  boardCanvas.style.width = displayPx + 'px';
+  boardCanvas.style.height = displayPx + 'px';
+  overlay.style.width = displayPx + 'px';
+  overlay.style.height = displayPx + 'px';
+
+  // Use logical size for drawing
+  boardCanvas.width = LOGICAL_SIZE;
+  boardCanvas.height = LOGICAL_SIZE;
+  overlay.width = LOGICAL_SIZE;
+  overlay.height = LOGICAL_SIZE;
+
+  // No DPR scaling, simplifies coordinates
+  ctx.setTransform(1,0,0,1,0,0);
+  octx.setTransform(1,0,0,1,0,0);
+
+  drawBoard();
+  redrawOverlay();
+}
+
+let fallbackAttempts = 0;
+function fallbackEnsureRender(){ sizeBoardExplicit(); fallbackAttempts++; if(fallbackAttempts < 6) setTimeout(fallbackEnsureRender, 200); }
+
+/* ---------------- CHESS ENGINE init (Original + Status Update) ---------------- */
+function readyInit(){
+  if(typeof Chess === 'function') game = new Chess();
+  else { // tiny fallback
+    console.error("Chess.js failed to load! Using fallback engine.");
+    game = {
+      _board:null,_turn:'w',
+      reset(){ const back=['r','n','b','q','k','b','n','r']; this._board=[]; this._board.push(back.map(t=>t.toLowerCase())); this._board.push(Array(8).fill('p')); for(let i=0;i<4;i++) this._board.push(Array(8).fill(null)); this._board.push(Array(8).fill('P')); this._board.push(back.map(t=>t.toUpperCase())); this._turn='w'; },
+      board(){ const arr=[]; for(let r=0;r<8;r++){ const row=[]; for(let f=0;f<8;f++){ const v=(this._board[r]&&this._board[r][f])?this._board[r][f]:null; if(!v) row.push(null); else { const color=(v===v.toUpperCase())?'w':'b'; row.push({type:v.toLowerCase(), color}); } } arr.push(row);} return arr; },
+      get(sq){ const f='abcdefgh'.indexOf(sq[0]); const r=8-parseInt(sq[1]); const v=(this._board[r]&&this._board[r][f])?this._board[r][f]:null; if(!v) return null; return {type:v.toLowerCase(), color:(v===v.toUpperCase()?'w':'b')}; },
+      move(obj){ const f1='abcdefgh'.indexOf(obj.from[0]), r1=8-parseInt(obj.from[1]); const f2='abcdefgh'.indexOf(obj.to[0]), r2=8-parseInt(obj.to[1]); const p=this._board[r1][f1]; if(!p) return null; this._board[r2][f2]=p; this._board[r1][f1]=null; this._turn=(this._turn==='w'?'b':'w'); return {from:obj.from,to:obj.to, piece: p.toLowerCase(), color: (p===p.toUpperCase()?'w':'b')}; },
+      undo(){ return null; }, moves(){ return []; }, turn(){ return this._turn; }, pgn(){ return ''; }, fen(){ return ''; }, in_check: ()=>false, in_checkmate: ()=>false, in_stalemate: ()=>false, in_draw: ()=>false,
+      remove(sq){ const f='abcdefgh'.indexOf(sq[0]); const r=8-parseInt(sq[1]); if(this._board && this._board[r]) this._board[r][f]=null; }
+    };
+  }
+  game.reset();
+  preloadPieceImages(()=>{
+      sizeBoardExplicit();
+      fallbackEnsureRender();
+      drawBoard();
+      redrawOverlay();
+      updateHistory();
+      updateStatus(); // <-- NEW: First status update
+  });
+}
+
+/* ---------------- DRAWING (MODIFIED for Pan/Zoom) ---------------- */
+const darkColor = '#4b0082';
+
+function drawBoard(){
+  const s = LOGICAL_SIZE/8;
+
+  ctx.save();
+  // NEW: Apply pan/zoom transform to the base canvas
+  ctx.translate(viewTransform.panX, viewTransform.panY);
+  ctx.scale(viewTransform.scale, viewTransform.scale);
+
+  ctx.clearRect(0,0,LOGICAL_SIZE,LOGICAL_SIZE);
+  for(let r=0;r<8;r++){
+    for(let f=0;f<8;f++){
+      const x = f*s, y = r*s;
+      const isDark = ((r+f)%2===1);
+      if(isDark){
+        const g = ctx.createLinearGradient(x,y,x+s,y+s); g.addColorStop(0,'#5b0075'); g.addColorStop(1,darkColor); ctx.fillStyle = g;
+      } else {
+        const g = ctx.createLinearGradient(x,y,x+s,y+s); g.addColorStop(0,'#ffffff'); g.addColorStop(1,'#f3f1f2'); ctx.fillStyle = g;
+      }
+      ctx.fillRect(x,y,s,s);
+    }
+  }
+  drawPieces();
+
+  ctx.restore();
+}
+
+function drawPieces(){
+  const s = LOGICAL_SIZE/8;
+  const b = game.board();
+  for(let r=0;r<8;r++){
+    for(let f=0;f<8;f++){
+      const p = b[r][f];
+      if(!p) continue;
+
+      // NEW: Don't draw if dragging
+      const sq = 'abcdefgh'[f] + (8 - r);
+      if(dragging && dragging.from === sq) continue;
+      if(animHideSquare && animHideSquare === sq) continue;
+
+      const visFile = boardFlipped ? (7 - f) : f;
+      const visRank = boardFlipped ? (7 - r) : r;
+      const centerX = visFile*s + s/2;
+      const centerY = visRank*s + s/2;
+      const img = (pieceImages[p.color] && pieceImages[p.color][p.type]) ? pieceImages[p.color][p.type] : null;
+      if(img && img.complete){
+        const w = s * PIECE_SCALE, h = s * PIECE_SCALE;
+        ctx.drawImage(img, centerX - w/2, centerY - h/2, w, h);
+      } else {
+        // (Original fallback)
+        ctx.save();
+        ctx.font = Math.floor(s*PIECE_SCALE) + 'px serif';
+        ctx.textAlign='center'; ctx.textBaseline='middle';
+        ctx.fillStyle = (p.color==='w' ? '#fff' : '#0f0f0f');
+        ctx.fillText(glyphFor(p.type,p.color), centerX, centerY);
+        ctx.restore();
+      }
+    }
+  }
+}
+
+function glyphFor(type,color){
+  const map = {'p':{'w':'♙','b':'♟'}, 'r':{'w':'♖','b':'♜'}, 'n':{'w':'♘','b':'♞'}, 'b':{'w':'♗','b':'♝'}, 'q':{'w':'♕','b':'♛'}, 'k':{'w':'♔','b':'♚'}};
+  return map[type][color];
+}
+
+/* ---------------- OVERLAY (MODIFIED for Pan/Zoom) ---------------- */
+function redrawOverlay(){
+  octx.clearRect(0,0,LOGICAL_SIZE,LOGICAL_SIZE);
+
+  octx.save();
+  // NEW: Apply pan/zoom to the overlay canvas
+  octx.translate(viewTransform.panX, viewTransform.panY);
+  octx.scale(viewTransform.scale, viewTransform.scale);
+
+  const s = LOGICAL_SIZE/8;
+  for(const h of highlights){
+    const visFile = boardFlipped ? (7 - h.file) : h.file;
+    const visRank = boardFlipped ? (7 - h.rank) : h.rank;
+    octx.fillStyle = h.color; octx.globalAlpha = h.alpha; octx.fillRect(visFile*s+4, visRank*s+4, s-8, s-8); octx.globalAlpha = 1;
+  }
+  for(const a of arrows){
+    const from = squareCenter(a.from);
+    const to = a.to ? squareCenter(a.to) : {x:a.toX, y:a.toY};
+    drawArrow(octx, from, to, a.color, Math.max(4, LOGICAL_SIZE*0.01));
+  }
+  if(selectedSquare){
+    const c = squareToCoords(selectedSquare);
+    octx.fillStyle = 'rgba(20, 200, 20, 0.5)'; // NEW: Brighter selection
+    octx.fillRect(c.x+4, c.y+4, s-8, s-8);
+    const moves = legalMovesFromSquare(selectedSquare);
+    octx.globalAlpha = 0.4; octx.fillStyle = 'rgba(255, 255, 0, 1)'; // NEW: Brighter highlight
+    moves.forEach(m=>{
+        const c2 = squareToCoords(m.to);
+        octx.beginPath();
+        if(m.flags.includes('c') || m.flags.includes('p')) { // Capture
+            octx.arc(c2.x + s/2, c2.y + s/2, s * 0.45, 0, 2 * Math.PI);
+            octx.fill();
+        } else { // Normal move
+            octx.arc(c2.x + s/2, c2.y + s/2, s * 0.15, 0, 2 * Math.PI);
+            octx.fill();
+        }
+    });
+    octx.globalAlpha = 1;
+  }
+
+  octx.restore();
+}
+
+function drawArrow(ctxA, from, to, color, width=6){
+  if(!from || !to) return;
+  const head = Math.max(10, LOGICAL_SIZE*0.02);
+  ctxA.lineWidth = width; ctxA.strokeStyle = color; ctxA.fillStyle = color; ctxA.lineCap='round';
+  ctxA.globalAlpha = 0.75; // NEW: Added transparency
+  ctxA.beginPath(); ctxA.moveTo(from.x, from.y); ctxA.lineTo(to.x, to.y); ctxA.stroke();
+  const dx = to.x - from.x, dy = to.y - from.y; const ang = Math.atan2(dy,dx);
+  ctxA.beginPath(); ctxA.moveTo(to.x, to.y);
+  ctxA.lineTo(to.x - head*Math.cos(ang - Math.PI/6), to.y - head*Math.sin(ang - Math.PI/6));
+  ctxA.lineTo(to.x - head*Math.cos(ang + Math.PI/6), to.y - head*Math.sin(ang + Math.PI/6));
+  ctxA.closePath(); ctxA.fill();
+  ctxA.globalAlpha = 1.0;
+}
+
+/* ---------------- COORD HELPERS (MODIFIED for Pan/Zoom) ---------------- */
+function getCanvasPos(evt){
+  const rect = boardCanvas.getBoundingClientRect();
+  // rect already reflects the current pan/zoom (CSS transform on an ancestor), so no further
+  // transform is needed here.
+  return {
+    x: (evt.clientX - rect.left) * (LOGICAL_SIZE / rect.width),
+    y: (evt.clientY - rect.top) * (LOGICAL_SIZE / rect.height)
+  };
+}
+function posToSquare(x,y){
+  const s = LOGICAL_SIZE/8;
+  let file = Math.floor(x / s), rank = Math.floor(y / s);
+  if(file<0||file>7||rank<0||rank>7) return null;
+  if(boardFlipped){ file = 7 - file; rank = 7 - rank; }
+  return 'abcdefgh'[file] + (8 - rank);
+}
+function squareToCoords(sq){
+  const fileIdx = 'abcdefgh'.indexOf(sq[0]); const rankIdx = 8 - parseInt(sq[1],10);
+  const s = LOGICAL_SIZE/8;
+  const visFile = boardFlipped ? (7 - fileIdx) : fileIdx;
+  const visRank = boardFlipped ? (7 - rankIdx) : rankIdx;
+  return {x: visFile * s, y: visRank * s};
+}
+function squareCenter(sq){ const c = squareToCoords(sq); const s = LOGICAL_SIZE/8; return {x: c.x + s/2, y: c.y + s/2}; }
+
+/* ---------------- INTERACTIONS (NEW: Merged Pinch/Pan/Drag/Tap) ---------------- */
+let currentMode = 'move';
+document.getElementById('mode').addEventListener('change', e=>{ currentMode = e.target.value; });
+
+overlay.style.touchAction = 'none';
+overlay.style.pointerEvents = 'auto';
+
+overlay.addEventListener('pointerdown', onDown, {passive:false});
+overlay.addEventListener('pointermove', onMove, {passive:false});
+overlay.addEventListener('pointerup', onUp, {passive:false});
+overlay.addEventListener('pointercancel', onCancel, {passive:false});
+
+let arrowTemp = null;
+let lastTapTime = 0, lastTapSquare = null;
+
+// NEW: Helper functions for pinch-zoom
+function getPinchDist() {
+    const pointers = Array.from(activePointers.values());
+    const e1 = pointers[0], e2 = pointers[1];
+    return Math.sqrt((e1.clientX - e2.clientX)**2 + (e1.clientY - e2.clientY)**2);
+}
+function getPinchMidpoint() {
+    const pointers = Array.from(activePointers.values());
+    const e1 = pointers[0], e2 = pointers[1];
+    return { x: (e1.clientX + e2.clientX) / 2, y: (e1.clientY + e2.clientY) / 2 };
+}
+// NEW: Helper function
+function legalMovesFromSquare(sq) {
+    if (!game || typeof game.moves !== 'function') return [];
+    return game.moves({ square: sq, verbose: true });
+}
+
+function onDown(e){
+  e.preventDefault();
+  activePointers.set(e.pointerId, e);
+
+  if (activePointers.size === 2) {
+      // START PINCH
+      isPinching = true;
+      isPanning = false; dragging = null; arrowTemp = null; // Cancel other actions
+      lastPinchDist = getPinchDist();
+      panStart = getPinchMidpoint();
+      lastPan = { x: viewTransform.panX, y: viewTransform.panY };
+      return;
+  }
+
+  if (activePointers.size > 2) return; // Ignore 3+ fingers
+
+  const p = getCanvasPos(e); // Logical coords
+  const sq = posToSquare(p.x,p.y);
+
+  // DOUBLE-TAP
+  const now = performance.now();
+  if((now - lastTapTime) < 350){
+    if(viewTransform.scale > 1.1) {
+      unzoomSmooth();
+      lastTapTime = 0; lastTapSquare = null;
+      activePointers.clear();
+      return;
+    } else if (sq && lastTapSquare === sq) {
+      zoomToSquareSmooth(sq);
+      lastTapTime = 0; lastTapSquare = null;
+      activePointers.clear();
+      return;
+    }
+  }
+
+  lastTapTime = now;
+  lastTapSquare = sq;
+
+  // --- 1-Finger Actions ---
+  if(currentMode === 'arrow'){
+    isPanning = false; isPinching = false; dragging = null;
+    arrowTemp = {from: sq, start: p};
+    return;
+  }
+  if(currentMode === 'highlight'){
+    isPanning = false; isPinching = false; dragging = null;
+    if(!sq) return;
+    highlights.push({file:'abcdefgh'.indexOf(sq[0]), rank:8-parseInt(sq[1],10), sq: sq, color: hexToRgba(document.getElementById('color').value,1), alpha:0.28});
+    redrawOverlay();
+    updateHistory();
+    return;
+  }
+  if(removeMode && sq){
+    isPanning = false; isPinching = false; dragging = null;
+    try{ game.remove && game.remove(sq); }catch(e){}
+    drawBoard();
+    redrawOverlay();
+    updateHistory();
+    updateStatus(); // <-- NEW
+    return;
+  }
+
+  if(currentMode === 'move'){
+    const piece = sq ? game.get(sq) : null;
+    if(!piece) {
+        // START PAN — disabled: one-finger panning from empty space is no longer allowed.
+        // isPanning intentionally left false here; panStart/lastPan/onMove's pan branch are
+        // untouched (kept for minimal-diff reasons per Phase 1C scope).
+        isPinching = false; dragging = null;
+        panStart = { x: e.clientX, y: e.clientY };
+        lastPan = { x: viewTransform.panX, y: viewTransform.panY };
+        return;
+    }
+
+    if(typeof game.turn === 'function' && piece.color !== game.turn()) {
+        // Clicked opponent piece, try to capture if one is selected
+        if(selectedSquare) {
+            onUp(e); // Treat as a "drop"
+        }
+        return;
+    }
+
+    // START DRAG
+    isPanning = false; isPinching = false;
+    dragging = {from: sq, piece: piece, startPos: p};
+    selectedSquare = sq;
+    redrawOverlay();
+  }
+}
+
+function onMove(e){
+  e.preventDefault();
+  if (!activePointers.has(e.pointerId)) return;
+  activePointers.set(e.pointerId, e);
+
+  if (isPinching && activePointers.size === 2) {
+      // PINCH-TO-ZOOM
+      const newDist = getPinchDist();
+      const mid = getPinchMidpoint();
+      const scaleAmount = newDist / lastPinchDist;
+      lastPinchDist = newDist;
+
+      // Pan logic
+      const dx = mid.x - panStart.x;
+      const dy = mid.y - panStart.y;
+      const newPanX_pre = lastPan.x + dx;
+      const newPanY_pre = lastPan.y + dy;
+
+      // Zoom logic
+      const rect = boardCanvas.getBoundingClientRect();
+      const displayWidth = rect.width;
+      const displayHeight = rect.height;
+
+      // Calculate the point on the canvas (in display px) that is under the pinch center
+      const zoomX_display = mid.x - rect.left;
+      const zoomY_display = mid.y - rect.top;
+
+      // Convert this to a point in the *logical* (600x600) scaled space
+      const zoomX_logical = (zoomX_display - newPanX_pre) / viewTransform.scale;
+      const zoomY_logical = (zoomY_display - newPanY_pre) / viewTransform.scale;
+
+      const newScale = Math.max(1, Math.min(viewTransform.scale * scaleAmount, 5));
+
+      // Calculate the new panX/Y to keep the logical point under the pinch center
+      const newPanX = zoomX_display - (zoomX_logical * newScale);
+      const newPanY = zoomY_display - (zoomY_logical * newScale);
+
+      // Apply transform
+      viewTransform.scale = newScale;
+      viewTransform.panX = newPanX;
+      viewTransform.panY = newPanY;
+
+      // Apply to wrapper
+      canvasWrap.style.transform = `translate(${viewTransform.panX}px, ${viewTransform.panY}px) scale(${viewTransform.scale})`;
+
+      // Redraw *everything* because scaling is not uniform
+      drawBoard();
+      redrawOverlay();
+      return;
+  }
+
+  const p = getCanvasPos(e); // Logical coords
+
+  if (isPanning) {
+      // PAN
+      const dx = e.clientX - panStart.x;
+      const dy = e.clientY - panStart.y;
+      viewTransform.panX = lastPan.x + dx;
+      viewTransform.panY = lastPan.y + dy;
+
+      // Apply to wrapper
+      canvasWrap.style.transform = `translate(${viewTransform.panX}px, ${viewTransform.panY}px) scale(${viewTransform.scale})`;
+
+      // No redraw needed, transform handles it
+      return;
+  }
+
+  if(arrowTemp){
+    redrawOverlay();
+
+    // Draw arrow on overlay (needs pan/zoom)
+    octx.save();
+    octx.translate(viewTransform.panX, viewTransform.panY);
+    octx.scale(viewTransform.scale, viewTransform.scale);
+    drawArrow(octx, squareCenter(arrowTemp.from), {x:p.x,y:p.y}, document.getElementById('color').value, 4);
+    octx.restore();
+    return;
+  }
+
+  if(dragging){
+    redrawOverlay();
+    const s = LOGICAL_SIZE/8;
+    const img = pieceImages[dragging.piece.color] && pieceImages[dragging.piece.color][dragging.piece.type];
+
+    // Draw on overlay, respecting pan/zoom
+    octx.save();
+    octx.translate(viewTransform.panX, viewTransform.panY);
+    octx.scale(viewTransform.scale, viewTransform.scale);
+
+    if(img && img.complete){
+      const w = s*PIECE_SCALE * 1.1, h = s*PIECE_SCALE * 1.1; // Slightly larger
+      octx.globalAlpha = 0.8;
+      octx.drawImage(img, p.x - w/2, p.y - h/2, w, h);
+      octx.globalAlpha = 1.0;
+    } else {
+      const glyph = glyphFor(dragging.piece.type, dragging.piece.color);
+      octx.font = Math.floor(s*PIECE_SCALE * 1.1)+'px serif';
+      octx.textAlign='center'; octx.textBaseline='middle';
+      octx.fillStyle = (dragging.piece.color==='w'?'#fff':'#0f0f0f');
+      octx.globalAlpha = 0.8;
+      octx.fillText(glyph, p.x, p.y);
+      octx.globalAlpha = 1.0;
+    }
+    octx.restore();
+  }
+}
+
+function onUp(e){
+  e.preventDefault();
+
+  const p = getCanvasPos(e); const sq = posToSquare(p.x,p.y);
+
+  if(arrowTemp){
+    if(sq && sq !== arrowTemp.from){
+        arrows.push({from: arrowTemp.from, to: sq, color: document.getElementById('color').value});
+        updateHistory();
+    }
+    arrowTemp = null;
+    redrawOverlay();
+  }
+
+  if(dragging){
+    if(sq && sq !== dragging.from){
+      const piece = dragging.piece;
+      // Check for promotion
+      if(piece.type === 'p' && (sq[1] === '8' || sq[1] === '1')){
+        // NEW: Call "Pro" modal
+        const fromSq = dragging.from; // captured now — onUp's own cleanup below clears `dragging` before this async callback runs
+        showPromotionModal(piece.color, choice => {
+            const res = attemptMove(fromSq, sq, choice);
+            dragging=null; selectedSquare=null;
+            if(res) {
+                animateMoveByPiece(res.from,res.to,ANIM_DURATION_MS, ()=>{ drawBoard(); redrawOverlay(); updateHistory(); updateStatus(); });
+            } else {
+                redrawOverlay(); // Redraw to clear legal moves
+            }
+        });
+      } else {
+        const res = attemptMove(dragging.from, sq, null);
+        dragging=null; selectedSquare=null;
+        if(res) {
+            animateMoveByPiece(res.from,res.to,ANIM_DURATION_MS, ()=>{ drawBoard(); redrawOverlay(); updateHistory(); updateStatus(); });
+        } else {
+            redrawOverlay(); // Redraw to clear legal moves
+        }
+      }
+    } else {
+        // Snap back
+        dragging=null; selectedSquare=null;
+        redrawOverlay();
+    }
+  }
+
+  // Clear pointer
+  activePointers.delete(e.pointerId);
+
+  // Reset interaction states
+  if (isPinching && activePointers.size < 2) {
+      isPinching = false;
+  }
+  if (isPanning && activePointers.size === 0) {
+      isPanning = false;
+  }
+  if (dragging && activePointers.size === 0) {
+      dragging = null;
+      selectedSquare = null;
+      redrawOverlay();
+  }
+}
+
+function onCancel(e){
+  e && e.preventDefault();
+  activePointers.clear();
+  dragging=null;
+  arrowTemp=null;
+  isPinching = false;
+  isPanning = false;
+  redrawOverlay();
+}
+
+/* ---------------- MOVE APPLY (Original + Status Update) ---------------- */
+function attemptMove(from,to,promotion){
+  prevBoardSnapshot = JSON.parse(JSON.stringify(game.board()));
+  prevMovingPieceInfo = game.get(from) ? {type: game.get(from).type, color: game.get(from).color} : null;
+
+  const moveObj = {from: from, to: to}; if(promotion) moveObj.promotion = promotion;
+  let m = null;
+  try { m = (typeof game.move === 'function') ? game.move(moveObj) : null; } catch(e){ m = null; }
+
+  if(m){
+    lastMoveRecord = {from: m.from || from, to: m.to || to, piece: m.piece || null};
+    if(!prevMovingPieceInfo && m && m.color && m.piece) prevMovingPieceInfo = { type: (m.piece || 'p'), color: m.color || 'w' };
+
+    updateStatus(); // <-- NEW
+    return {from: lastMoveRecord.from, to: lastMoveRecord.to};
+  } else {
+    // Invalid move
+    return null;
+  }
+}
+
+/* ---------------- NEW: Upgraded Promotion UI (using Glyphs) ---------------- */
+function showPromotionModal(color, callback){
+  promotionCallback = callback; // Store the callback
+  promotionBox.innerHTML = '';
+  const pieces = ['q', 'r', 'b', 'n'];
+  pieces.forEach(p => {
+    const button = document.createElement('button');
+    button.className = 'promo-btn'; // Use new promo style
+    button.dataset.piece = p;
+    button.innerHTML = glyphFor(p, color);
+    button.onclick = () => {
+        promotionModal.classList.remove('show');
+        if (promotionCallback) promotionCallback(p);
+        promotionCallback = null;
+    };
+    promotionBox.appendChild(button);
+  });
+  promotionModal.classList.add('show');
+}
+
+
+/* ---------------- ON-SCREEN ANIMATION (MODIFIED for Pan/Zoom) ---------------- */
+function animateMoveByPiece(from,to,durationMs,onComplete){
+  const piece = game.get(to) || (prevMovingPieceInfo || {type:'p', color:'w'});
+  const type = piece.type || 'p';
+  const color = piece.color || 'w';
+  const start = squareCenter(from), end = squareCenter(to);
+  const img = (pieceImages[color] && pieceImages[color][type]) ? pieceImages[color][type] : null;
+  animHideSquare = to; // hide the static "already arrived" piece until the flight finishes
+  function after(){
+    animHideSquare = null;
+    lastMoveRecord = {from,to,type,color: color};
+    if(onComplete) onComplete();
+  }
+  if(type === 'n'){ animKnight(start,end,img,durationMs,after); }
+  else if(type === 'b'){ animBishop(start,end,img,durationMs,after); }
+  else if(type === 'r'){ animRook(start,end,img,durationMs,after); }
+  else if(type === 'q'){ animQueen(start,end,img,durationMs,after); }
+  else if(type === 'k'){ animKing(start,end,img,durationMs,after); }
+  else { animPawn(start,end,img,durationMs,after); }
+}
+
+/* animation implementations */
+function drawMovingImage(img, x, y, scale=1, angle=0, useOverlay=true){
+  const ctxTarget = useOverlay ? octx : ctx;
+  if(!img || !img.complete) return;
+  const s = LOGICAL_SIZE/8;
+  const w = s*PIECE_SCALE*scale, h = s*PIECE_SCALE*scale;
+  ctxTarget.save();
+  // NEW: Apply pan/zoom IF it's the overlay
+  if (useOverlay) {
+      ctxTarget.translate(viewTransform.panX, viewTransform.panY);
+      ctxTarget.scale(viewTransform.scale, viewTransform.scale);
+  }
+  ctxTarget.translate(x,y);
+  ctxTarget.rotate(angle);
+  ctxTarget.drawImage(img, -w/2, -h/2, w, h);
+  ctxTarget.restore();
+}
+
+function quadBezier(p0,p1,p2,t){ const x = Math.pow(1-t,2)*p0.x + 2*(1-t)*t*p1.x + Math.pow(t,2)*p2.x; const y = Math.pow(1-t,2)*p0.y + 2*(1-t)*t*p1.y + Math.pow(t,2)*p2.y; return {x,y}; }
+function cubicBezier(p0,p1,p2,p3,t){ const x = Math.pow(1-t,3)*p0.x + 3*Math.pow(1-t,2)*t*p1.x + 3*(1-t)*Math.pow(t,2)*p2.x + Math.pow(t,3)*p3.x; const y = Math.pow(1-t,3)*p0.y + 3*Math.pow(1-t,2)*t*p1.y + 3*(1-t)*Math.pow(t,2)*p2.y + Math.pow(t,3)*p3.y; return {x,y}; }
+function easeOutCubic(t){ return 1 - Math.pow(1 - t, 3); }
+function easeInOutCubic(t){ return t<0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2,3)/2; }
+
+// NEW: All anim functions now wrap their effects in save/restore
+// to respect the pan/zoom transform on the overlay.
+function animPawn(start,end,img,duration,onComplete){ const s = LOGICAL_SIZE/8; const t0 = performance.now(); function frame(now){ const t = Math.min(1,(now-t0)/duration), e = easeOutCubic(t); drawBoard(); redrawOverlay(); octx.globalAlpha = 1; const x = start.x + (end.x - start.x)*e; const y = start.y + (end.y - start.y)*e - 6*(1 - Math.abs(0.5 - e)); const scale = 1 + 0.04*(1 - Math.abs(0.5 - e)); octx.save(); octx.translate(viewTransform.panX, viewTransform.panY); octx.scale(viewTransform.scale, viewTransform.scale); octx.beginPath(); octx.fillStyle = `rgba(250,238,88,${0.45*e})`; octx.arc(end.x,end.y, s*(0.2 + 0.4*e),0,Math.PI*2); octx.fill(); octx.restore(); drawMovingImage(img,x,y,scale,0,true); if(t<1) requestAnimationFrame(frame); else { octx.clearRect(0,0,LOGICAL_SIZE,LOGICAL_SIZE); if(onComplete) onComplete(); } } requestAnimationFrame(frame); }
+function animRook(start,end,img,duration,onComplete){ const s = LOGICAL_SIZE/8; const t0 = performance.now(); function frame(now){ const t = Math.min(1,(now-t0)/duration), e = easeOutCubic(t); drawBoard(); redrawOverlay(); const x = start.x + (end.x - start.x)*e, y = start.y + (end.y - start.y)*e; const bounce = (t>0.85)? (1 + (1 - (t-0.85)/0.15)*0.08) : 1; drawMovingImage(img,x,y,bounce,0,true); if(t>0.7){ const p=(t-0.7)/0.3; octx.save(); octx.translate(viewTransform.panX, viewTransform.panY); octx.scale(viewTransform.scale, viewTransform.scale); octx.beginPath(); octx.fillStyle = `rgba(255,235,150,${0.25*(1-p)})`; octx.arc(end.x,end.y,s*(0.1 + p*0.7),0,Math.PI*2); octx.fill(); octx.restore(); } if(t<1) requestAnimationFrame(frame); else { octx.clearRect(0,0,LOGICAL_SIZE,LOGICAL_SIZE); if(onComplete) onComplete(); } } requestAnimationFrame(frame); }
+function animBishop(start,end,img,duration,onComplete){ const s = LOGICAL_SIZE/8; const ctrl = { x: (start.x+end.x)/2 + (end.y - start.y)*0.18, y: (start.y+end.y)/2 + (start.x - end.x)*0.18 }; const t0 = performance.now(); function frame(now){ const t = Math.min(1,(now-t0)/duration), e = easeOutCubic(t); drawBoard(); redrawOverlay(); const pos = quadBezier(start, ctrl, end, e); const tilt = (e-0.5)*0.18; octx.globalAlpha = 1; octx.save(); octx.translate(viewTransform.panX, viewTransform.panY); octx.scale(viewTransform.scale, viewTransform.scale); octx.beginPath(); octx.fillStyle = `rgba(180,220,255,${0.14*(1-e)})`; octx.arc(pos.x,pos.y, s*0.22,0,Math.PI*2); octx.fill(); octx.restore(); drawMovingImage(img,pos.x,pos.y,1,tilt,true); if(t<1) requestAnimationFrame(frame); else { octx.clearRect(0,0,LOGICAL_SIZE,LOGICAL_SIZE); if(onComplete) onComplete(); } } requestAnimationFrame(frame); }
+function animKnight(start,end,img,duration,onComplete){ const s = LOGICAL_SIZE/8; const mid = { x: (start.x+end.x)/2, y: (start.y+end.y)/2 - Math.max( s*0.5, Math.hypot(end.x-start.x,end.y-start.y)*0.28 ) }; const t0 = performance.now(); function frame(now){ const t = Math.min(1,(now-t0)/duration), e = easeOutCubic(t); drawBoard(); redrawOverlay(); const pos = quadBezier(start, mid, end, e); const rotation = Math.PI * (e*1.2); drawMovingImage(img,pos.x,pos.y,1 + 0.06*(1 - Math.abs(0.5 - e)),rotation,true); octx.save(); octx.translate(viewTransform.panX, viewTransform.panY); octx.scale(viewTransform.scale, viewTransform.scale); octx.beginPath(); octx.fillStyle = `rgba(0,0,0,${0.14*(1-e)})`; octx.ellipse(pos.x, pos.y + 24*(1-e), s*0.25, s*0.12*(1-e), 0, 0, Math.PI*2); octx.fill(); octx.restore(); if(t<1) requestAnimationFrame(frame); else { octx.clearRect(0,0,LOGICAL_SIZE,LOGICAL_SIZE); if(onComplete) onComplete(); } } requestAnimationFrame(frame); }
+function animQueen(start,end,img,duration,onComplete){ const s = LOGICAL_SIZE/8; const ctrl1 = { x: start.x + (end.x - start.x)*0.33 - (end.y - start.y)*0.12, y: start.y + (end.y - start.y)*0.33 + (end.x - start.x)*0.06 }; const ctrl2 = { x: start.x + (end.x - start.x)*0.66 + (end.y - start.y)*0.12, y: start.y + (end.y - start.y)*0.66 - (end.x - start.x)*0.06 }; const t0 = performance.now(); function frame(now){ const t = Math.min(1,(now-t0)/duration), e = easeOutCubic(t); drawBoard(); redrawOverlay(); const pos = cubicBezier(start, ctrl1, ctrl2, end, e); const rotation = (e - 0.5) * Math.PI * 0.35; const scale = 1 + 0.07*(1 - Math.abs(0.5 - e)); drawMovingImage(img,pos.x,pos.y,scale,rotation,true); if(e>0.45 && e<0.65){ octx.save(); octx.translate(viewTransform.panX, viewTransform.panY); octx.scale(viewTransform.scale, viewTransform.scale); octx.beginPath(); octx.fillStyle = `rgba(255,230,120,${(0.65-e)*2})`; octx.arc(pos.x,pos.y, s*0.38*(0.65-e)*4,0,Math.PI*2); octx.fill(); octx.restore(); } if(t<1) requestAnimationFrame(frame); else { octx.clearRect(0,0,LOGICAL_SIZE,LOGICAL_SIZE); if(onComplete) onComplete(); } } requestAnimationFrame(frame); }
+function animKing(start,end,img,duration,onComplete){ const s = LOGICAL_SIZE/8; const t0 = performance.now(); function frame(now){ const t = Math.min(1,(now-t0)/duration), e = easeInOutCubic(t*0.9); drawBoard(); redrawOverlay(); const x = start.x + (end.x - start.x)*e; const y = start.y + (end.y - start.y)*e - 4*(1 - Math.abs(0.5 - e)); const rotation = (e - 0.5) * 0.08; const scale = 1 + 0.03*(1 - Math.abs(0.5 - e)); drawMovingImage(img,x,y,scale,rotation,true); if(t>0.8){ const g=(t-0.8)/0.2; octx.save(); octx.translate(viewTransform.panX, viewTransform.panY); octx.scale(viewTransform.scale, viewTransform.scale); octx.beginPath(); octx.fillStyle = `rgba(255,245,200,${0.18*(1-g)})`; octx.arc(end.x,end.y, s*0.45*g,0,Math.PI*2); octx.fill(); octx.restore(); } if(t<1) requestAnimationFrame(frame); else { octx.clearRect(0,0,LOGICAL_SIZE,LOGICAL_SIZE); if(onComplete) onComplete(); } } requestAnimationFrame(frame); }
+
+/* ---------------- CONTROLS (Original + Status Updates) ---------------- */
+document.getElementById('undo').addEventListener('click', ()=>{ try{ game.undo(); updateStatus(); drawBoard(); redrawOverlay(); updateHistory(); }catch(e){} });
+document.getElementById('reset').addEventListener('click', ()=>{ game.reset(); arrows=[]; highlights=[]; selectedSquare=null; prevBoardSnapshot=null; prevMovingPieceInfo=null; lastMoveRecord=null; animHideSquare=null; updateStatus(); unzoomSmooth(); drawBoard(); redrawOverlay(); updateHistory(); });
+document.getElementById('flip').addEventListener('click', ()=>{ boardFlipped = !boardFlipped; drawBoard(); redrawOverlay(); });
+document.getElementById('playAnim').addEventListener('click', ()=>{ if(lastMoveRecord) animateMoveByPiece(lastMoveRecord.from, lastMoveRecord.to, ANIM_DURATION_MS, ()=>{ drawBoard(); redrawOverlay(); updateHistory(); updateStatus(); }); });
+document.getElementById('exportAnim').addEventListener('click', ()=>{ if(!lastMoveRecord || !prevBoardSnapshot){ showMessage('Make a move first (drag a piece). Export records the last move.', 'error'); return; } exportLastMoveAsWebM({from: lastMoveRecord.from, to: lastMoveRecord.to, preSnapshot: prevBoardSnapshot, movingPiece: prevMovingPieceInfo}, {fps: EXPORT_FPS, duration: ANIM_DURATION_MS}); });
+const removeBtn = document.getElementById('removeToggle'); removeBtn.addEventListener('click', ()=>{ removeMode = !removeMode; removeBtn.classList.toggle('active', removeMode); removeBtn.textContent = removeMode ? 'Remove: ON' : 'Remove Piece'; });
+document.getElementById('clearAll').addEventListener('click', ()=>{ arrows=[]; highlights=[]; redrawOverlay(); updateHistory(); });
+
+/* history UI (Original) */
+function updateHistory(){ const el=document.getElementById('historyList'); el.innerHTML=''; arrows.forEach((a,i)=>{ const d=document.createElement('div'); d.style.padding='6px'; d.style.borderBottom='1px solid rgba(255,255,255,0.03)'; d.innerHTML=`Arrow ${i+1}: ${a.from} → ${a.to} <button data-i='${i}' style="padding: 2px 5px; font-size: 10px; float: right;">X</button>`; el.appendChild(d); }); highlights.forEach((h,i)=>{ const d=document.createElement('div'); d.style.padding='6px'; d.style.borderBottom='1px solid rgba(255,255,255,0.03)'; d.innerHTML=`Highlight ${i+1}: ${h.sq} <button data-i='h${i}' style="padding: 2px 5px; font-size: 10px; float: right;">X</button>`; el.appendChild(d); }); el.querySelectorAll('button').forEach(b=>{ b.onclick=()=>{ const id=b.dataset.i; if(id.startsWith('h')){ highlights.splice(parseInt(id.slice(1)),1); } else { arrows.splice(parseInt(id),1); } redrawOverlay(); updateHistory(); }; }); }
+
+/* hotkeys (Original) */
+document.addEventListener('keydown', (e)=>{ if(document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA') return; if(e.key==='m'||e.key==='M'){ document.getElementById('mode').value='move'; document.getElementById('mode').dispatchEvent(new Event('change')); } if(e.key==='a'||e.key==='A'){ document.getElementById('mode').value='arrow'; document.getElementById('mode').dispatchEvent(new Event('change')); } if(e.key==='h'||e.key==='H'){ document.getElementById('mode').value='highlight'; document.getElementById('mode').dispatchEvent(new Event('change')); } if(e.key==='c'||e.key==='C'){ arrows=[]; highlights=[]; redrawOverlay(); updateHistory(); } if(e.key==='f'||e.key==='F'){ document.getElementById('flip').click(); } if(e.code === 'Space'){ e.preventDefault(); document.getElementById('playAnim').click(); } });
+
+/* ---------------- ZOOM helpers (MODIFIED for Pan/Zoom) ---------------- */
+function zoomToSquareSmooth(sq){
+  const displayPx = boardHolder.clientWidth;
+  const c = squareCenter(sq); // Logical coords
+
+  // Convert logical coordinates to display coordinates
+  const displayCoordinateX = c.x * displayPx / LOGICAL_SIZE;
+  const displayCoordinateY = c.y * displayPx / LOGICAL_SIZE;
+
+  const scale = 2.5; // Target scale
+
+  // Calculate pan needed to center the square accounting for center origin
+  let targetPanX = scale * ((displayPx / 2) - displayCoordinateX);
+  let targetPanY = scale * ((displayPx / 2) - displayCoordinateY);
+
+  // Correct pan bounds
+  const panMin = (displayPx / 2) * (1 - scale);
+  const panMax = (displayPx / 2) * (scale - 1);
+
+  targetPanX = Math.max(panMin, Math.min(panMax, targetPanX));
+  targetPanY = Math.max(panMin, Math.min(panMax, targetPanY));
+
+  const start = {tx: viewTransform.panX || 0, ty: viewTransform.panY || 0, scale: viewTransform.scale || 1};
+  const end = {tx: targetPanX, ty: targetPanY, scale: scale};
+
+  animateTransform(start, end, 420);
+  zoomHint.style.display = 'block';
+}
+function unzoomSmooth(){
+  const start = {tx: viewTransform.panX || 0, ty: viewTransform.panY || 0, scale: viewTransform.scale || 1};
+  const end = {tx: 0, ty:0, scale: 1};
+  animateTransform(start, end, 420);
+  zoomHint.style.display = 'none';
+}
+function animateTransform(from,to,dur){
+  const t0 = performance.now();
+  function frame(now){
+    const t = Math.min(1,(now - t0)/dur);
+    const e = easeInOutCubic(t);
+    const tx = from.tx + (to.tx - from.tx)*e;
+    const ty = from.ty + (to.ty - from.ty)*e;
+    const s = from.scale + (to.scale - from.scale)*e;
+
+    // Apply transform
+    viewTransform.panX = tx;
+    viewTransform.panY = ty;
+    viewTransform.scale = s;
+    canvasWrap.style.transform = `translate(${tx}px, ${ty}px) scale(${s})`;
+
+    // Redraw *during* zoom
+    drawBoard();
+    redrawOverlay();
+
+    if(t < 1) requestAnimationFrame(frame);
+    else {
+      // Snap to final state
+      viewTransform = {...to};
+      canvasWrap.style.transform = `translate(${to.tx}px, ${to.ty}px) scale(${to.scale})`;
+      drawBoard();
+      redrawOverlay();
+    }
+  }
+  requestAnimationFrame(frame);
+}
+
+/* ---------------- EXPORT: CRITICAL FIX ----------------
+   This function is now modified to *only* render the moving piece
+   on a transparent background.
+   THE TYPO 'LOGICAL_GSIZE' IS FIXED.
+*/
+function exportLastMoveAsWebM(moveRec, opts={fps:EXPORT_FPS, duration:ANIM_DURATION_MS}){
+  try {
+    const fps = opts.fps || EXPORT_FPS;
+    const duration = opts.duration || ANIM_DURATION_MS;
+    const frameCount = Math.max(1, Math.round((duration/1000) * fps));
+
+    // temp canvas for drawing logical-size frames
+    const temp = document.createElement('canvas'); temp.width = LOGICAL_SIZE; temp.height = LOGICAL_SIZE;
+    const tctx = temp.getContext('2d', {alpha:true});
+
+    // export canvas square (with alpha)
+    const exportCanvas = document.createElement('canvas'); exportCanvas.width = EXPORT_SIZE; exportCanvas.height = EXPORT_SIZE;
+    const ectx = exportCanvas.getContext('2d', {alpha:true});
+
+    // prepare snapshot and moving info
+    const preSnapshot = moveRec.preSnapshot || prevBoardSnapshot || game.board();
+    const movingInfo = moveRec.movingPiece || prevMovingPieceInfo || (game.get(moveRec.to) || game.get(moveRec.from) || {type:'p', color:'w'});
+    const movingType = movingInfo.type || 'p';
+    const movingColor = movingInfo.color || 'w';
+    const from = moveRec.from, to = moveRec.to;
+
+    // remove moving piece from the preSnapshot at 'from' so it can be drawn separately
+    (function removeFromSnapshot(){
+      const f = 'abcdefgh'.indexOf(from[0]);
+      const r = 8 - parseInt(from[1]);
+      if(preSnapshot[r] && preSnapshot[r][f]) preSnapshot[r][f] = null;
+    })();
+
+    // compute centers
+    const startCenter = squareCenter(from);
+    const endCenter = squareCenter(to);
+
+    // -------------------------------------------------
+    // --- START FINAL FIX (Padding + Context) ---
+    // -------------------------------------------------
+
+    // PADDING FIX: Use 0.5 for margin as requested
+    const margin = LOGICAL_SIZE/8 * 0.5; // "half square" padding
+    const minX = Math.min(startCenter.x, endCenter.x) - margin;
+    const maxX = Math.max(startCenter.x, endCenter.x) + margin;
+    const minY = Math.min(startCenter.y, endCenter.y) - margin;
+    const maxY = Math.max(startCenter.y, endCenter.y) + margin;
+
+    let boxW = Math.min(LOGICAL_SIZE, Math.max(120, maxX - minX));
+    let boxH = Math.min(LOGICAL_SIZE, Math.max(120, maxY - minY));
+
+    // make square crop (export square) by expanding
+    const boxSize = Math.min(LOGICAL_SIZE, Math.max(boxW, boxH));
+
+    // center
+    const boxCX = (minX + maxX)/2;
+    const boxCY = (minY + maxY)/2;
+    // compute crop coordinates (clamped)
+    let cropX = Math.max(0, Math.min(LOGICAL_SIZE - boxSize, boxCX - boxSize/2));
+    let cropY = Math.max(0, Math.min(LOGICAL_SIZE - boxSize, boxCY - boxSize/2));
+
+    // --- CONTEXT FIX: These functions are now restored ---
+    // These functions are helpers *inside* exportLastMoveAsWebM
+    function drawPiecesFromSnapshotTo(targetCtx, snapshot){
+      const s = LOGICAL_SIZE/8;
+      for(let r=0;r<8;r++){
+        for(let f=0;f<8;f++){
+          const p = snapshot[r][f];
+          if(!p) continue;
+          const sq = 'abcdefgh'[f] + (8 - r);
+          const visFile = boardFlipped ? (7 - f) : f;
+          const visRank = boardFlipped ? (7 - r) : r;
+          const cx = visFile*s + s/2, cy = visRank*s + s/2;
+          const img = (pieceImages[p.color] && pieceImages[p.color][p.type]) ? pieceImages[p.color][p.type] : null;
+          if(img && img.complete){
+            const w = s * PIECE_SCALE, h = s * PIECE_SCALE;
+            targetCtx.drawImage(img, cx - w/2, cy - h/2, w, h);
+          } else {
+            targetCtx.save();
+            targetCtx.font = Math.floor(s*PIECE_SCALE) + 'px serif';
+            targetCtx.textAlign='center'; targetCtx.textBaseline='middle';
+            targetCtx.fillStyle = (p.color==='w' ? '#fff' : '#0f0f0f');
+            targetCtx.fillText(glyphFor(p.type,p.color), cx, cy);
+            targetCtx.restore();
+          }
+        }
+      }
+    }
+
+    function drawOverlayElementsToTemp(targetCtx){
+      const s = LOGICAL_SIZE/8;
+      for(const h of highlights){
+        const vf = boardFlipped ? (7 - h.file) : h.file;
+        const vr = boardFlipped ? (7 - h.rank) : h.rank;
+        targetCtx.fillStyle = h.color; targetCtx.globalAlpha = h.alpha; targetCtx.fillRect(vf*s+4, vr*s+4, s-8, s-8); targetCtx.globalAlpha = 1;
+      }
+      for(const a of arrows){
+        const from = squareCenter(a.from);
+        const to = a.to ? squareCenter(a.to) : {x:a.toX, y:a.toY};
+        drawArrow(targetCtx, from, to, a.color, Math.max(4, LOGICAL_SIZE*0.01));
+      }
+    }
+
+    function drawBoardToTemp(){
+      tctx.clearRect(0,0,LOGICAL_SIZE,LOGICAL_SIZE);
+      const s = LOGICAL_SIZE/8;
+      // draw squares
+      for(let r=0;r<8;r++){
+        for(let f=0;f<8;f++){
+          const x = f*s, y = r*s;
+          const isDark = ((r+f)%2===1);
+          if(isDark){ const g = tctx.createLinearGradient(x,y,x+s,y+s); g.addColorStop(0,'#5b0075'); g.addColorStop(1,darkColor); tctx.fillStyle = g; }
+          else { const g = tctx.createLinearGradient(x,y,x+s,y+s); g.addColorStop(0,'#ffffff'); g.addColorStop(1,'#f3f1f2'); tctx.fillStyle = g; }
+          tctx.fillRect(x,y,s,s);
+        }
+      }
+      // draw pieces from snapshot (without moving piece)
+      drawPiecesFromSnapshotTo(tctx, preSnapshot);
+      // draw arrows & highlights
+      drawOverlayElementsToTemp(tctx);
+    }
+
+    // -------------------------------------------------
+    // --- END FINAL FIX (Padding + Context) ---
+    // -------------------------------------------------
+
+    // compute moving piece state for given t (0..1)
+    function computePieceState(type, start, end, t){
+      // This function is identical to the one in Chess_l.html,
+      // correctly calculating the cinematic path.
+      if(type === 'n'){
+        const mid = { x: (start.x+end.x)/2, y: (start.y+end.y)/2 - Math.max( LOGICAL_SIZE/8*0.5, Math.hypot(end.x-start.x,end.y-start.y)*0.28 ) };
+        const p = quadBezier(start, mid, end, easeOutCubic(t));
+        const angle = Math.PI * (t*1.2);
+        const sc = 1 + 0.06*(1 - Math.abs(0.5 - t));
+        return {x:p.x,y:p.y,angle,scale:sc};
+      } else if(type === 'b'){
+        const ctrl = { x: (start.x+end.x)/2 + (end.y - start.y)*0.18, y: (start.y+end.y)/2 + (start.x - end.x)*0.18 };
+        const p = quadBezier(start, ctrl, end, easeOutCubic(t));
+        const angle = (t-0.5)*0.18;
+        return {x:p.x,y:p.y,angle,scale:1};
+      } else if(type === 'r'){
+        const p = { x: start.x + (end.x - start.x)*easeOutCubic(t), y: start.y + (end.y - start.y)*easeOutCubic(t) };
+        const bounce = (t>0.85)? (1 + (1 - (t-0.85)/0.15)*0.08) : 1;
+        return {x:p.x,y:p.y,angle:0,scale:bounce};
+      } else if(type === 'q'){
+        const ctrl1 = { x: start.x + (end.x - start.x)*0.33 - (end.y - start.y)*0.12, y: start.y + (end.y - start.y)*0.33 + (end.x - start.x)*0.06 };
+        const ctrl2 = { x: start.x + (end.x - start.x)*0.66 + (end.y - start.y)*0.12, y: start.y + (end.y - start.y)*0.66 - (end.x - start.x)*0.06 };
+        const p = cubicBezier(start, ctrl1, ctrl2, end, easeOutCubic(t));
+        const angle = (t - 0.5) * Math.PI * 0.35;
+        const sc = 1 + 0.07*(1 - Math.abs(0.5 - t));
+        return {x:p.x,y:p.y,angle,scale:sc};
+      } else if(type === 'k'){
+        const p = { x: start.x + (end.x - start.x)*easeInOutCubic(t*0.9), y: start.y + (end.y - start.y)*easeInOutCubic(t*0.9) - 4*(1 - Math.abs(0.5 - t)) };
+        const angle = (t - 0.5) * 0.08;
+        const sc = 1 + 0.03*(1 - Math.abs(0.5 - t));
+        return {x:p.x,y:p.y,angle,scale:sc};
+      } else {
+        const p = { x: start.x + (end.x - start.x)*easeOutCubic(t), y: start.y + (end.y - start.y)*easeOutCubic(t) - 6*(1 - Math.abs(0.5 - t)) };
+        const sc = 1 + 0.04*(1 - Math.abs(0.5 - t));
+        return {x:p.x,y:p.y,angle:0,scale:sc};
+      }
+    }
+
+    // prepare MediaRecorder with alpha if supported
+    let mime = 'video/webm;codecs=vp9';
+    const stream = exportCanvas.captureStream(fps);
+    let recorder;
+    try { recorder = new MediaRecorder(stream, {mimeType: mime}); }
+    catch(e){
+      console.warn("VP9 with alpha not supported, falling back.");
+      mime = 'video/webm';
+      try {
+        recorder = new MediaRecorder(stream, {mimeType: mime});
+      } catch (e2) {
+        showMessage("Video recording is not supported on this browser.", "error");
+        return;
+      }
+    }
+    const chunks = [];
+    recorder.ondataavailable = e => { if(e.data && e.data.size) chunks.push(e.data); };
+    recorder.onstop = () => {
+      const blob = new Blob(chunks, {type: mime});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const fromName = from.replace(/\s+/g,'');
+      const toName = to.replace(/\s+/g,'');
+      a.href = url;
+      a.download = `move_${fromName}_to_${toName}.webm`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(()=>{ URL.revokeObjectURL(url); }, 2000);
+
+      showMessage('Export complete!', 'success');
+    };
+
+    // Start recorder
+    recorder.start();
+    showMessage('Recording... Please wait.', 'success', duration + 500);
+
+    // Produce frames
+    let frameIndex = 0;
+    const intervalMs = Math.round(1000 / fps);
+
+    const timer = setInterval(()=>{
+      const t = Math.min(1, frameIndex / Math.max(1, frameCount - 1));
+
+      // -------------------------------------------------
+      // --- START RENDER LOOP (with Context) ---
+      // -------------------------------------------------
+
+      // 1. Draw the board, static pieces, and overlays
+      drawBoardToTemp();
+
+      // 2. Compute moving piece state at t
+      const state = computePieceState(movingType, startCenter, endCenter, t);
+
+      // 3. Draw *ONLY* the moving piece on top of the context
+      if(pieceImages[movingColor] && pieceImages[movingColor][movingType] && pieceImages[movingColor][movingType].complete){
+        const img = pieceImages[movingColor][movingType];
+        const s = LOGICAL_SIZE/8;
+        const w = s * PIECE_SCALE * state.scale, h = s * PIECE_SCALE * state.scale;
+        tctx.save();
+        tctx.translate(state.x, state.y);
+        tctx.rotate(state.angle);
+        tctx.drawImage(img, -w/2, -h/2, w, h);
+        tctx.restore();
+      } else {
+        // (Original glyph fallback)
+        tctx.save();
+        tctx.font = Math.floor((LOGICAL_SIZE/8)*PIECE_SCALE) + 'px serif';
+        tctx.textAlign='center'; tctx.textBaseline='middle';
+        tctx.fillStyle = (movingColor==='w' ? '#fff' : '#000');
+        tctx.fillText(glyphFor(movingType,movingColor), state.x, state.y);
+        tctx.restore();
+      }
+
+      // -------------------------------------------------
+      // --- END RENDER LOOP ---
+      // -------------------------------------------------
+
+      // 4. Compute dynamic camera center following piece (lerp from start->end)
+      const camX = startCenter.x + (endCenter.x - startCenter.x) * t;
+      const camY = startCenter.y + (endCenter.y - startCenter.y) * t;
+
+      // Compute crop (ensure crop fits inside board)
+      const half = boxSize / 2;
+      let sx = Math.max(0, Math.min(LOGICAL_SIZE - boxSize, camX - half));
+      let sy = Math.max(0, Math.min(LOGICAL_SIZE - boxSize, camY - half));
+
+      // 5. Draw cropped region from temp (transparent) canvas to final (export) canvas
+      ectx.clearRect(0,0,EXPORT_SIZE,EXPORT_SIZE);
+      ectx.drawImage(temp, sx, sy, boxSize, boxSize, 0, 0, EXPORT_SIZE, EXPORT_SIZE);
+
+      frameIndex++;
+      if(frameIndex >= frameCount){
+        clearInterval(timer);
+        // tiny extra frame before stopping to stabilize
+        setTimeout(()=>{ recorder.stop(); }, 80);
+      }
+    }, intervalMs);
+  } catch (err) {
+    console.error("Export failed:", err);
+    showMessage("Export failed! See console for error.", "error");
+  }
+}
+
+/* ---------------- INIT ---------------- */
+window.addEventListener('load', ()=>{ try{ readyInit(); } catch(e){ console.error(e); readyInit(); } });
+
+/* ---------------- NEW: UI Util Functions ---------------- */
+function updateStatus() {
+  if (!game) return;
+  let status = game.turn() === 'w' ? "White's Turn" : "Black's Turn";
+
+  if (game.in_checkmate()) {
+      status = `Checkmate! ${game.turn() === 'w' ? 'Black' : 'White'} wins.`;
+  } else if (game.in_stalemate()) {
+      status = 'Stalemate! Game is a draw.';
+  } else if (game.in_draw()) {
+      status = 'Draw!';
+  } else if (game.in_check()) {
+      status += ' (Check)';
+  }
+
+  statusBar.textContent = status;
+  statusBar.style.color = game.in_check() ? '#F44336' : 'white';
+  statusBar.style.display = 'block';
+}
+
+function showMessage(message, type = 'success', duration = 3000) {
+    messageBox.textContent = message;
+    messageBox.className = type === 'error' ? 'error' : 'success';
+    messageBox.classList.add('show');
+
+    setTimeout(() => {
+        messageBox.classList.remove('show');
+    }, duration);
+}
+
+/* ---------------- UTIL (Original) ---------------- */
+function hexToRgba(hex,a=1){
+    const c = hex.replace('#','');
+    const bigint = parseInt(c,16);
+    const r=(bigint>>16)&255;
+    const g=(bigint>>8)&255;
+    const b=bigint&255;
+    return `rgba(${r},${g},${b},${a})`;
+}
+window.addEventListener('resize', debounce(()=>{ sizeBoardExplicit(); }, 120));
+function debounce(fn, wait){ let t; return function(){ clearTimeout(t); t = setTimeout(fn, wait); }; }
+
+</script>
+</body>
+</html>

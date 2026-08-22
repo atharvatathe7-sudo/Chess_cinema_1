@@ -495,3 +495,51 @@ UI is a component that reads/writes `AppState.timeline` through the
 store — indistinguishable, from the renderer's point of view, from a
 generator's output. None of this requires touching `render/Renderer.ts`,
 `preview/PreviewLoop.ts`, or `export/runExport.ts`.
+
+## 16. Phase 1.1 — Interactive Timeline & Playback Controls
+
+Adds a touch-friendly scrub bar, Restart/Previous/Next Move controls,
+and a move/time indicator to the Phase 1 UI. Purely additive: no new
+state, no second renderer, no second clock.
+
+- **`timeline/navigation.ts`**: pure functions over `Scene.beats` —
+  `clampToScene`, `nextBeatBoundaryMs`, `previousBeatBoundaryMs`,
+  `currentMoveNumber`, `totalMoveCount`. Timeline data stays the only
+  source of truth for "where is the previous/next move boundary" and
+  "what move are we on"; nothing here reads or writes playback state.
+- **`state/actions.ts`** gains `restart`, `goToNextMove`,
+  `goToPreviousMove`, all of which just compute a target `logicalTimeMs`
+  via `timeline/navigation.ts` and call the existing `seekTo`/
+  `setPlaying` — no new fields on `AppState`. `seekTo` itself now clamps
+  to `[0, sceneDurationMs]` via `clampToScene`, the one place that needs
+  to happen since it's the only function allowed to write
+  `playback.logicalTimeMs`.
+- **`ui/TimelineControl.ts`**: a hand-built Pointer-Events scrub bar
+  (`setPointerCapture`/`releasePointerCapture`, tap-anywhere-to-seek,
+  drag-to-scrub). It holds no playback state of its own — every pointer
+  event just calls the `onSeek` callback the caller supplies, which
+  dispatches the existing `seekTo`/`setPlaying` actions. Visual
+  refresh (`setValue`) is driven by the same `store.subscribe` callback
+  `ui/panel.ts` already had for the rest of the UI, so there is exactly
+  one place the DOM is kept in sync with `AppState`.
+- **`ui/panel.ts`**: mounts the new control and buttons, and calls
+  `previewTick` synchronously right after dispatching any navigation
+  action, in addition to the already-running `PreviewLoop`'s own
+  per-frame call — both call sites invoke the same `render/Renderer.render`
+  (same pattern already established between preview and export; see
+  Correction 6's acceptance test), so this is not a second render path,
+  just a second *trigger* for the one render function, added so
+  scrubbing feels instant rather than waiting up to one animation frame.
+  The board's on-screen CSS size is now computed once at mount from the
+  viewport (`min(94vw, 480px)`, explicitly square) instead of relying on
+  a canvas's incidental replaced-element aspect ratio.
+- Tests: `timeline/navigation.test.ts` (pure boundary logic),
+  `render/scrubbing.test.ts` (bidirectional scrub correctness against
+  real driven games — capture, castling, capturing promotion — plus a
+  general "drawn piece count always equals the base layer's own occupant
+  count" invariant that rules out ghost pieces under adversarial,
+  non-monotonic scrub order), `state/actions.test.ts` additions
+  (restart/next/previous/play→pause→scrub→play), and
+  `tests/e2e/scrubbing.spec.ts` (Playwright against the real UI,
+  including an emulated-touch-device suite exercising `page.touchscreen`
+  and touch-typed pointer events).

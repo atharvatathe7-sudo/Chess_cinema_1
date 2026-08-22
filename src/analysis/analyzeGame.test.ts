@@ -7,7 +7,7 @@ import type { AppError } from '../errors/AppError';
 import type { AnalysisEngine } from './AnalysisEngine';
 import { analyzeGame } from './analyzeGame';
 import { analysisCancelledError, engineProtocolError } from './analysisErrors';
-import type { AnalysisSettings, Evaluation, PositionEvaluation } from './types';
+import type { AnalysisSettings, Evaluation, MultiPvResult, PositionEvaluation } from './types';
 
 /**
  * A deterministic stand-in for Stockfish. These tests are about the analysis
@@ -40,6 +40,11 @@ class ScriptedEngine implements AnalysisEngine {
       principalVariation: ['e2e4', 'e7e5'],
       depth: 12
     });
+  }
+
+  // Not exercised by these pipeline tests — Phase 2.2's own tests cover it.
+  async evaluatePositionMultiPv(): Promise<Result<MultiPvResult, AppError>> {
+    return ok({ lines: [] });
   }
 
   cancel(): void {}
@@ -260,6 +265,7 @@ describe('analyzeGame — progress and cancellation', () => {
     const cancellingEngine: AnalysisEngine = {
       init: async () => ok(undefined),
       evaluatePosition: async () => err(analysisCancelledError()),
+      evaluatePositionMultiPv: async () => ok({ lines: [] }),
       cancel: vi.fn(),
       dispose: vi.fn()
     };

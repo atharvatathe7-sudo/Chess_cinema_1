@@ -1,9 +1,9 @@
 import { err, ok, type Result } from '../errors/Result';
 import type { AppError } from '../errors/AppError';
 import type { AnalysisEngine } from './AnalysisEngine';
-import type { AnalysisSettings, PositionEvaluation } from './types';
+import type { AnalysisSettings, MultiPvResult, PositionEvaluation } from './types';
 import { fromUciScore } from './evaluation';
-import { foldInfoLines, parseBestMoveLine } from './uci';
+import { foldInfoLines, foldMultiPvLines, parseBestMoveLine } from './uci';
 import { createEngineWorkerUrls, loadEngineAssets, type EngineWorkerUrls } from './engineAssets';
 import {
   analysisCancelledError,
@@ -187,7 +187,12 @@ export class StockfishAnalysisEngine implements AnalysisEngine {
       // `ucinewgame` clears the engine's internal state between positions so
       // each evaluation is independent of the order positions were fed in —
       // without it, hash carry-over makes results depend on history.
+      // MultiPV is reset to 1 unconditionally, regardless of whether a prior
+      // evaluatePositionMultiPv call left it higher — this is what keeps
+      // single-PV analysis correct and independent of call order, which is
+      // the one thing the MultiPV addition requires touching here.
       worker.postMessage('ucinewgame');
+      worker.postMessage('setoption name MultiPV value 1');
       worker.postMessage(`position fen ${fen}`);
       worker.postMessage(`go depth ${settings.depth}`);
     });
@@ -213,6 +218,96 @@ export class StockfishAnalysisEngine implements AnalysisEngine {
       principalVariation: best.principalVariation ?? [],
       depth: best.depth ?? settings.depth
     });
+  }
+
+  /**
+   * MultiPV variant of evaluatePosition, for Phase 2.2's Chess Understanding
+   * Layer. Shares the exact same worker/handshake/cancellation machinery;
+   * the only differences are the `setoption name MultiPV value N` sent
+   * before the search, and folding the info stream by multipv index
+   * instead of taking only the primary line. Always restores MultiPV to 1
+   * once done, so a subsequent evaluatePosition call is unaffected.
+   */
+  async evaluatePositionMultiPv(
+    fen: string,
+    settings: AnalysisSettings,
+    lines: number
+  ): Promise<Result<MultiPvResult, AppError>> {
+    if (this.disposed) return err(engineLoadError('engine was disposed'));
+    const worker = this.worker;
+    if (!worker) return err(engineLoadError('engine not initialised'));
+
+    const infoLines: string[] = [];
+
+    type Outcome =
+      | { status: 'done' }
+      | { status: 'cancelled' }
+      | { status: 'timeout' }
+      | { status: 'worker-error'; detail: string };
+
+    const outcome = await new Promise<Outcome>((resolve) => {
+      const finish = (value: Outcome): void => {
+        clearTimeout(timer);
+        this.activeListener = null;
+        this.cancelActive = null;
+        this.failActive = null;
+        resolve(value);
+      };
+
+      const timer = setTimeout(() => {
+        worker.postMessage('stop');
+        finish({ status: 'timeout' });
+      }, settings.maxTimeMsPerPosition);
+
+      this.cancelActive = () => {
+        worker.postMessage('stop');
+        finish({ status: 'cancelled' });
+      };
+
+      this.failActive = (detail: string) => finish({ status: 'worker-error', detail });
+
+      this.activeListener = (line: string) => {
+        if (line.startsWith('info')) {
+          infoLines.push(line);
+          return;
+        }
+        if (parseBestMoveLine(line)) {
+          finish({ status: 'done' });
+        }
+      };
+
+      worker.postMessage('ucinewgame');
+      worker.postMessage(`setoption name MultiPV value ${lines}`);
+      worker.postMessage(`position fen ${fen}`);
+      worker.postMessage(`go depth ${settings.depth}`);
+    });
+
+    // Restore single-PV mode regardless of outcome, so a later
+    // evaluatePosition call is never left running a wider search than it asked for.
+    worker.postMessage('setoption name MultiPV value 1');
+
+    if (outcome.status === 'cancelled') return err(analysisCancelledError());
+    if (outcome.status === 'timeout') return err(engineTimeoutError(fen));
+    if (outcome.status === 'worker-error') {
+      return err(engineProtocolError(`worker error during multi-pv analysis of ${fen}: ${outcome.detail}`));
+    }
+
+    const sideToMove = sideToMoveFromFen(fen);
+    const folded = foldMultiPvLines(infoLines);
+    const resultLines = [];
+    for (let rank = 1; rank <= lines; rank++) {
+      const info = folded.get(rank);
+      if (!info || info.score === undefined || !info.principalVariation || info.principalVariation.length === 0) continue;
+      resultLines.push({
+        rank,
+        move: info.principalVariation[0]!,
+        principalVariation: info.principalVariation,
+        evaluation: fromUciScore(info.score, sideToMove),
+        depth: info.depth ?? settings.depth
+      });
+    }
+
+    return ok({ lines: resultLines });
   }
 
   cancel(): void {

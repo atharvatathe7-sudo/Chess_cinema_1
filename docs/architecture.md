@@ -596,7 +596,21 @@ It is loaded exactly one way, in every environment:
 
 Only step 1 varies by environment; the worker construction, protocol and
 analysis code are identical, so there is no second engine integration and
-no mock. Verified working in Chromium including under the Artifact CSP.
+no mock.
+
+The worker script also carries a small prelude, prepended ahead of the
+unmodified Stockfish glue code, that overrides `self.fetch` so the one
+request the glue makes for its own wasm binary resolves from an
+`ArrayBuffer` already embedded in the same script — never a network or
+blob request. This exists because the Claude Artifact sandbox's CSP allows
+`worker-src blob:` (creating the Worker) but not `connect-src blob:`
+(fetching a blob: URL from inside it) — two independent directives — which
+a real Android test caught: Worker creation and the glue script's own
+top-level execution both succeeded, but its internal `fetch(wasmBlobUrl)`
+failed outright. A standalone diagnostic (`src/analysis/engineAssets.ts`'s
+fetch-intercept prelude) isolated this exactly, and a Playwright regression
+test reproduces the same restriction via a real HTTP
+`Content-Security-Policy` header to prove the fix holds under it.
 
 Because the engine is on a worker thread, the main thread stays free: the
 board keeps rendering and Cancel stays responsive throughout a run.
@@ -635,3 +649,102 @@ These are called `EvaluationSwingCandidate` and nothing more. Phase 2.1
 deliberately does **not** label moves Brilliant/Great/Inaccuracy/Mistake/
 Blunder — those imply a classification system with thresholds and intent
 detection this phase does not have.
+
+## 18. Phase 2.2 — Chess Understanding Layer
+
+A new, self-contained module tree, `src/understanding/`, sitting between
+Phase 2.1's `GameAnalysis` and the future Story Engine:
+`understandGame(analysis, engine, options) -> GameUnderstanding`. It
+consumes Phase 2.1's output — it does not re-run the per-position analysis
+loop — and touches no Renderer, Timeline, or AppState code. Full type
+definitions live in `src/understanding/types.ts`, including the sign- and
+scope-convention banner comments this project uses for its load-bearing
+rules (mirroring `analysis/types.ts`'s evaluation-convention comment).
+
+### Three independent axes
+
+Every output is one of exactly three kinds, never conflated:
+
+- **Engine optimality** (`MoveQualityClass`) — `'optimal' | 'inaccuracy' |
+  'mistake' | 'blunder' | 'missed-win'`, one strictly-derived value per
+  ply, from a total decision tree over `swingForMoverCp`/`mateTransition`
+  reusing `candidates.ts`'s own `minSwingCp` threshold (never a second,
+  possibly-conflicting constant). It answers one question only — how did
+  this move compare to the engine's own best line — and is never read as a
+  proxy for significance or brilliance anywhere downstream.
+- **Chess significance** (`SignificanceRecord`) — a deterministic score,
+  symmetric across both directions of a swing (unlike Phase 2.1's
+  loss-only candidate list), so a brilliant forced-mate delivery can be
+  `qualityClass: 'optimal'` (it lost nothing) and still carry very high
+  significance.
+- **Narrative potential** — not computed by this layer at all. The closest
+  it gets is `narrativeSignals: NarrativeArchetypeSignal[]`, always plural
+  and confidence-tagged evidence bundles, never a picked archetype.
+
+### Rule-geometry layer, independent of ChessEngine
+
+`src/understanding/geometry.ts` computes attack maps, pin/skewer/battery
+line motifs, forks, discovered attacks, king mobility, and Static Exchange
+Evaluation (SEE) — all pure functions over a FEN, using a local chess.js
+instance directly. It does not import or extend `ChessEngine`/
+`ChessJsEngine`; those stay exactly as Phase 1 left them. SEE is the
+standard swap-off algorithm (least-valuable-attacker-first, negamax
+unwind), with one documented simplification: no X-ray re-evaluation as
+pieces are removed from the target square.
+
+### SEE-gated threats
+
+`threats.ts` only materializes a `ThreatRecord` when a candidate attack
+clears a real gate: `check-threat`/`mate-threat` (chess.js-confirmed,
+including mate-in-1 via a one-ply "null move" side-to-move flip — reported
+as `chess-rule` evidence rather than spending engine budget, since it is
+fully rule-verifiable), `material-winning-threat` (SEE > 0 for the
+attacker), or `positional-restriction-threat` (a piece with zero legal
+squares while attacked — always `basis: 'inference'`, confidence-tagged).
+A trivial attack on an adequately defended low-value piece never produces
+a record.
+
+### MultiPV — the one new engine capability
+
+`AnalysisEngine` gained one additive method,
+`evaluatePositionMultiPv(fen, settings, lines)`, implemented in
+`StockfishAnalysisEngine` by sending `setoption name MultiPV value N`
+before the search and restoring it to 1 afterward; `evaluatePosition` now
+also resets MultiPV to 1 at the start of every call, so single-PV behaviour
+is correct regardless of call order. `uci.ts` gained `foldMultiPvLines`
+(folds by `multipv` index instead of only the primary line) alongside the
+untouched `foldInfoLines`. Every existing single-PV caller is unaffected —
+verified by the full existing Phase 2.1 suite passing unmodified.
+
+Follow-up engine work is bounded and deterministic
+(`UnderstandingEngineBudget`): a hard cap on how many positions receive
+any follow-up query at all, shared between MultiPV and (a currently unused
+but interface-supported) deeper re-search, with selection computed before
+any engine call from zero-cost signals only (ranked by `|swingForMoverCp|`,
+decisive mate transitions first, tie-broken by ply — same rule
+`candidates.ts` uses). `BestAlternativeRecord.bestMoveUniqueness` is
+honestly three-valued (`'unique' | 'shared' | 'unknown'`) — absence of
+MultiPV data for a ply is never read as uniqueness.
+
+### Cause -> consequence
+
+For every `TurningPoint`, a `CauseConsequenceRecord` maps the full
+explanation pattern (position, move, immediate change, mechanism, best
+alternative, opponent response, forced-or-not, evaluation/material
+consequence, resolution) into structured fields — never prose. Every
+string field is chess notation, a closed enum label, or `Evidence.note`
+(internal audit text only, never end-user copy) — a rule stated explicitly
+in `types.ts` and checked by not having any other kind of string field
+exist.
+
+### Testing
+
+Unit tests cover the geometry primitives against hand-constructed textbook
+FENs (fork, pin, skewer, battery, discovery, SEE both ways, king mobility),
+and every orchestration module against scripted fixtures — no real engine
+needed for those. `tests/e2e/understanding.spec.ts` drives the real
+Stockfish engine through curated PGNs (a real tactical line, a genuine
+forced mate) and includes a determinism regression: two `understandGame`
+runs over identical inputs produce byte-identical output
+(`JSON.stringify` equality), verified stable across repeated real-engine
+runs, not just scripted ones.

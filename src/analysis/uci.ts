@@ -96,6 +96,30 @@ export function parseBestMoveLine(line: string): { bestMove: string | null } | n
  * search artefacts rather than real evaluations, and multipv lines beyond
  * the first describe alternative moves rather than the position's value.
  */
+/**
+ * Companion to foldInfoLines for MultiPV searches: folds a stream of `info`
+ * lines into the best available line for EACH multipv index (1-indexed),
+ * rather than only the primary line. Every existing single-PV caller keeps
+ * using foldInfoLines unmodified — this is purely additive.
+ */
+export function foldMultiPvLines(lines: readonly string[]): Map<number, UciInfo> {
+  const best = new Map<number, UciInfo>();
+
+  for (const line of lines) {
+    const info = parseInfoLine(line);
+    if (!info || info.score === undefined) continue;
+    if (info.bound !== undefined) continue;
+    const index = info.multipv ?? 1;
+
+    const existing = best.get(index);
+    if (!existing || (info.depth ?? 0) >= (existing.depth ?? 0)) {
+      best.set(index, info);
+    }
+  }
+
+  return best;
+}
+
 export function foldInfoLines(lines: readonly string[]): UciInfo | null {
   let best: UciInfo | null = null;
 

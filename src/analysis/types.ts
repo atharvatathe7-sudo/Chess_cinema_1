@@ -162,3 +162,23 @@ export interface AnalysisProgress {
   /** Total positions to evaluate (plies + 1: every position including the start). */
   readonly total: number;
 }
+
+/**
+ * One line from a MultiPV search — an alternative the engine considered,
+ * ranked by strength. rank 1 is the same as what a single-PV
+ * evaluatePosition call would have returned.
+ */
+export interface MultiPvLine {
+  readonly rank: number;
+  /** First move of this line, UCI long algebraic. */
+  readonly move: string;
+  readonly principalVariation: readonly string[];
+  /** White-relative, via fromUciScore — same convention as everywhere else. */
+  readonly evaluation: Evaluation;
+  readonly depth: number;
+}
+
+export interface MultiPvResult {
+  /** Ordered by rank ascending. May be shorter than requested if the engine reported fewer distinct lines. */
+  readonly lines: readonly MultiPvLine[];
+}

@@ -1,6 +1,7 @@
 import type { GameRecord } from '../pgn/types';
 import type { Timeline } from '../timeline/types';
 import type { AppError } from '../errors/AppError';
+import type { AnalysisProgress, GameAnalysis } from '../analysis/types';
 
 /**
  * A GameRecord and the Timeline generated from it always travel together
@@ -43,11 +44,30 @@ export interface AssetState {
   error?: AppError;
 }
 
+/**
+ * Analysis is strictly ADDITIVE state (Phase 2.1). It records what the engine
+ * found, and nothing else: it holds no clock, no position, no piece placement
+ * and no timing of its own, so it cannot drift from — or compete with —
+ * Timeline/playback, which remain the sole authority for what is displayed
+ * when. The renderer never reads this slice.
+ */
+export type AnalysisRunState = 'idle' | 'running' | 'complete' | 'error';
+
+export interface AnalysisState {
+  status: AnalysisRunState;
+  /** Progress of the run currently in flight, if any. */
+  progress: AnalysisProgress | null;
+  /** The completed analysis, or null when none has finished for the loaded game. */
+  result: GameAnalysis | null;
+  error: AppError | null;
+}
+
 export interface AppState {
   game: LoadedGame | null;
   playback: PlaybackState;
   ui: UiState;
   assets: AssetState;
+  analysis: AnalysisState;
 }
 
 export function createInitialState(): AppState {
@@ -64,6 +84,12 @@ export function createInitialState(): AppState {
     },
     assets: {
       pieces: 'loading'
+    },
+    analysis: {
+      status: 'idle',
+      progress: null,
+      result: null,
+      error: null
     }
   };
 }

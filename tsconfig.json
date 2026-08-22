@@ -13,7 +13,11 @@
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "verbatimModuleSyntax": false
+    "verbatimModuleSyntax": false,
+    // Vite does the transpiling; tsc is only ever used for type checking.
+    // Without this, `tsc -b` in the build script emits .js files next to
+    // every source file.
+    "noEmit": true
   },
   "include": ["src", "tests", "vite.config.ts", "vitest.config.ts"]
 }

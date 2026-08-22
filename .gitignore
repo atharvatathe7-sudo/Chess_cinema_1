@@ -5,3 +5,7 @@ playwright-report/
 blob-report/
 *.local
 *.tsbuildinfo
+
+# Stockfish engine files are copied from the pinned npm package by
+# scripts/sync-engine.mjs at build time, not committed.
+public/engine/

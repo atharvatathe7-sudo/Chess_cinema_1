@@ -113,3 +113,51 @@ test('engine evaluations obey the white-relative sign convention', async ({ page
   expect(asNumber(white)).toBeGreaterThan(0);
   expect(asNumber(black)).toBeGreaterThan(0);
 });
+
+test('a broken engine payload produces a diagnosable error, not a bare timeout', async ({ page }) => {
+  // Regression coverage for the Android "Analysis engine failed to load"
+  // report: corrupt the inline engine payload the way build-artifact.mjs's
+  // output is consumed (window.__CHESS_CINEMA_ENGINE__) so init() takes the
+  // exact same code path the Artifact build uses, then assert the resulting
+  // AppError actually says something — proving worker.onerror and the
+  // handshake-stage tracking added to StockfishAnalysisEngine do their job
+  // instead of leaving a bare "engine handshake timed out".
+  await page.addInitScript(() => {
+    (window as unknown as { __CHESS_CINEMA_ENGINE__: unknown }).__CHESS_CINEMA_ENGINE__ = {
+      glue: 'this is not valid javascript {{{',
+      wasmBase64: btoa('not a real wasm module')
+    };
+  });
+  await page.goto('/');
+
+  const result = await page.evaluate(async () => {
+    const modulePath = '/src/analysis/StockfishAnalysisEngine.ts';
+    const mod = (await import(/* @vite-ignore */ modulePath)) as {
+      StockfishAnalysisEngine: new () => {
+        init(): Promise<{ ok: boolean; error?: { message: string; cause?: unknown } }>;
+        dispose(): void;
+      };
+    };
+    const engine = new mod.StockfishAnalysisEngine();
+    const init = await engine.init();
+    engine.dispose();
+    if (init.ok) return { ok: true as const };
+    const cause = init.error?.cause;
+    return {
+      ok: false as const,
+      message: init.error?.message,
+      causeText: cause instanceof Error ? cause.message : String(cause)
+    };
+  });
+
+  expect(result.ok).toBe(false);
+  if (!result.ok) {
+    expect(result.message).toBe('The analysis engine failed to load. Game analysis is unavailable.');
+    // The old behaviour was a bare "engine handshake timed out" with no way
+    // to tell a broken payload from a slow one. A syntactically invalid
+    // glue script must fail fast via worker.onerror with real detail, not
+    // silently run out the 30s handshake clock.
+    expect(result.causeText).not.toBe('engine handshake timed out');
+    expect(result.causeText.length).toBeGreaterThan(0);
+  }
+});

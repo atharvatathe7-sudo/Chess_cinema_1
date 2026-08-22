@@ -6,6 +6,7 @@ import { createInitialState, type AppState } from '../state/AppState';
 import { Store } from '../state/store';
 import { goToNextMove, goToPreviousMove, loadPgn, restart, seekTo, setPlaying } from '../state/actions';
 import { cancelAnalysis, runAnalysis } from '../state/analysisActions';
+import type { AppError } from '../errors/AppError';
 import { StockfishAnalysisEngine } from '../analysis/StockfishAnalysisEngine';
 import { formatEvaluation, formatSwingCp } from '../analysis/evaluation';
 import { currentMoveNumber, totalMoveCount } from '../timeline/navigation';
@@ -156,7 +157,7 @@ export function mountPanel(root: HTMLElement): void {
         ? `Analyzing ${progress.completed} / ${progress.total}`
         : 'Starting analysis…';
     } else if (status === 'error') {
-      analysisStatus.textContent = error?.message ?? 'Analysis failed.';
+      analysisStatus.textContent = formatAnalysisError(error);
     } else if (status === 'complete' && result) {
       analysisStatus.textContent = `Analysis complete — ${result.plies.length} moves at depth ${result.settings.depth}.`;
     } else {
@@ -281,6 +282,29 @@ export function mountPanel(root: HTMLElement): void {
     }
     previewLoop.start();
   });
+}
+
+/**
+ * error.message alone is deliberately generic ("The analysis engine failed
+ * to load"), so diagnosing a real failure needs error.cause too — this is
+ * the only place that reads it, surfacing it right in the UI since this
+ * project has no separate error-reporting channel to check instead.
+ */
+function formatAnalysisError(error: AppError | null | undefined): string {
+  if (!error) return 'Analysis failed.';
+  const cause = describeCause(error.cause);
+  return cause ? `${error.message} — ${cause}` : error.message;
+}
+
+function describeCause(cause: unknown): string | null {
+  if (cause === undefined || cause === null) return null;
+  if (cause instanceof Error) return cause.message;
+  if (typeof cause === 'string') return cause;
+  try {
+    return JSON.stringify(cause);
+  } catch {
+    return String(cause);
+  }
 }
 
 /** Move text and engine strings are inserted as HTML, so they are escaped first. */

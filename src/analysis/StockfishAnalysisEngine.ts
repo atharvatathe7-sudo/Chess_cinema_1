@@ -21,6 +21,19 @@ function sideToMoveFromFen(fen: string): Color {
 }
 
 /**
+ * Renders a Worker-level `error` event into something a human (or an
+ * AppError.cause reader) can actually act on. Browsers vary in how much they
+ * expose here — `event.error` can be null across the worker boundary — so
+ * this falls back through message/filename/line before giving up.
+ */
+function describeWorkerError(event: ErrorEvent): string {
+  const message =
+    event.error instanceof Error ? event.error.message : event.message || 'unknown worker error';
+  const location = event.filename ? ` (${event.filename}:${event.lineno}:${event.colno})` : '';
+  return `${message}${location}`;
+}
+
+/**
  * Stockfish running in a dedicated Web Worker, speaking UCI over postMessage.
  *
  * Everything expensive happens off the main thread: the UI keeps rendering
@@ -40,6 +53,12 @@ export class StockfishAnalysisEngine implements AnalysisEngine {
   private activeListener: ((line: string) => void) | null = null;
   /** Invoked by cancel() to reject whatever evaluation is currently pending. */
   private cancelActive: (() => void) | null = null;
+  /**
+   * Invoked from worker.onerror to fail whatever is currently pending
+   * (handshake or an in-flight evaluation) with the real underlying error,
+   * instead of leaving it to run out the clock on a generic timeout.
+   */
+  private failActive: ((detail: string) => void) | null = null;
   private disposed = false;
 
   async init(): Promise<Result<void, AppError>> {
@@ -58,6 +77,12 @@ export class StockfishAnalysisEngine implements AnalysisEngine {
         const line = typeof event.data === 'string' ? event.data : String(event.data);
         this.activeListener?.(line);
       };
+      worker.onerror = (event: ErrorEvent) => {
+        // Prevent this from also surfacing as an unhandled browser-level
+        // error/console entry on top of the one we're about to report.
+        event.preventDefault();
+        this.failActive?.(describeWorkerError(event));
+      };
 
       await this.handshake(worker);
       return ok(undefined);
@@ -67,22 +92,41 @@ export class StockfishAnalysisEngine implements AnalysisEngine {
     }
   }
 
-  /** Sends `uci` then `isready` and waits for `uciok` + `readyok`, so the engine is genuinely warm. */
+  /**
+   * Sends `uci` then `isready` and waits for `uciok` + `readyok`, so the
+   * engine is genuinely warm. Tracks which of the two it's waiting on, and
+   * reacts to worker.onerror, so a failure here reports exactly which stage
+   * never arrived and, when the browser gives us one, the real underlying
+   * error — rather than a bare 30-second timeout with no diagnostic value.
+   */
   private handshake(worker: Worker): Promise<void> {
     return new Promise((resolve, reject) => {
       let sawUciOk = false;
-      const timer = setTimeout(() => {
+      let stage: 'awaiting uciok' | 'awaiting readyok' = 'awaiting uciok';
+
+      const cleanup = (): void => {
+        clearTimeout(timer);
         this.activeListener = null;
-        reject(new Error('engine handshake timed out'));
+        this.failActive = null;
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error(`engine handshake timed out (${stage})`));
       }, HANDSHAKE_TIMEOUT_MS);
+
+      this.failActive = (detail: string) => {
+        cleanup();
+        reject(new Error(`worker error during handshake (${stage}): ${detail}`));
+      };
 
       this.activeListener = (line: string) => {
         if (line === 'uciok') {
           sawUciOk = true;
+          stage = 'awaiting readyok';
           worker.postMessage('isready');
         } else if (line === 'readyok' && sawUciOk) {
-          clearTimeout(timer);
-          this.activeListener = null;
+          cleanup();
           resolve();
         }
       };
@@ -104,13 +148,15 @@ export class StockfishAnalysisEngine implements AnalysisEngine {
     type Outcome =
       | { status: 'done'; bestMove: string | null }
       | { status: 'cancelled' }
-      | { status: 'timeout' };
+      | { status: 'timeout' }
+      | { status: 'worker-error'; detail: string };
 
     const outcome = await new Promise<Outcome>((resolve) => {
       const finish = (value: Outcome): void => {
         clearTimeout(timer);
         this.activeListener = null;
         this.cancelActive = null;
+        this.failActive = null;
         resolve(value);
       };
 
@@ -124,6 +170,8 @@ export class StockfishAnalysisEngine implements AnalysisEngine {
         worker.postMessage('stop');
         finish({ status: 'cancelled' });
       };
+
+      this.failActive = (detail: string) => finish({ status: 'worker-error', detail });
 
       this.activeListener = (line: string) => {
         if (line.startsWith('info')) {
@@ -146,6 +194,9 @@ export class StockfishAnalysisEngine implements AnalysisEngine {
 
     if (outcome.status === 'cancelled') return err(analysisCancelledError());
     if (outcome.status === 'timeout') return err(engineTimeoutError(fen));
+    if (outcome.status === 'worker-error') {
+      return err(engineProtocolError(`worker error while analysing ${fen}: ${outcome.detail}`));
+    }
 
     const best = foldInfoLines(infoLines);
     if (!best || best.score === undefined) {
@@ -181,5 +232,6 @@ export class StockfishAnalysisEngine implements AnalysisEngine {
     this.urls = null;
     this.activeListener = null;
     this.cancelActive = null;
+    this.failActive = null;
   }
 }

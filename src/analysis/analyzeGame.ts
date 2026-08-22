@@ -67,7 +67,10 @@ function terminalEvaluation(fen: string, rules: ChessEngine): Evaluation | null 
   } else {
     result = 'draw';
   }
-  return { kind: 'terminal', result };
+  // status === 'stalemate' is itself a draw, but a factually distinct one
+  // from repetition/50-move/insufficient-material — preserved here rather
+  // than collapsed, since ChessEngine.status() already tells us which.
+  return status === 'stalemate' ? { kind: 'terminal', result, drawReason: 'stalemate' } : { kind: 'terminal', result };
 }
 
 export async function analyzeGame(

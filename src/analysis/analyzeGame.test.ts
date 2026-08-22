@@ -215,6 +215,68 @@ describe('analyzeGame — edge cases', () => {
     // Mate appearing on the board is a swing in the mover's favour.
     expect(finalPly.swingForMoverCp).toBeGreaterThan(0);
     expect(finalPly.mateTransition).toBe('mate-appeared');
+    // Checkmate is not a draw — drawReason must never appear on a decisive result.
+    expect('drawReason' in finalPly.evaluationAfter).toBe(false);
+  });
+
+  it('preserves stalemate as a distinct draw reason (Phase 2.2.1)', async () => {
+    // A real, legal sequence (verified against chess.js directly) ending in
+    // genuine stalemate for Black — not checkmate, not an ordinary draw.
+    const game = gameFrom(
+      '1. e3 a5 2. Qh5 Ra6 3. Qxa5 h5 4. Qxc7 Rah6 5. h4 f6 6. Qxd7+ Kf7 7. Qxb7 Qd3 8. Qxb8 Qh7 9. Qxc8 Kg6 10. Qe6'
+    );
+    const engine = new ScriptedEngine([
+      cp(0), cp(0), cp(0), cp(0), cp(0), cp(0), cp(0), cp(0), cp(0), cp(0),
+      cp(0), cp(0), cp(0), cp(0), cp(0), cp(0), cp(0), cp(0), cp(0), 'no-score'
+    ]);
+
+    const result = await analyzeGame(game, engine, new ChessJsEngine());
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const finalPly = result.value.plies[result.value.plies.length - 1]!;
+    expect(finalPly.evaluationAfter).toEqual({ kind: 'terminal', result: 'draw', drawReason: 'stalemate' });
+  });
+
+  it('does not report drawReason for an ordinary draw (Phase 2.2.1)', async () => {
+    // terminalEvaluation() checks a single FEN via a freshly loaded rules
+    // engine with no move history, so a repetition draw (which chess.js can
+    // only detect from history) is not usable as a fixture here — that is a
+    // pre-existing, orthogonal limitation of FEN-only terminal detection,
+    // not something this phase changes. Insufficient material (verified
+    // against chess.js directly) IS fully determinable from a single FEN,
+    // so it is the correct "ordinary, non-stalemate draw" fixture. The move
+    // list is a hand-built placeholder — analyzeGame never validates move
+    // legality itself, only consults GameRecord.positions/moves as given
+    // (the same trust boundary the empty-game fixture above relies on).
+    const game: GameRecord = {
+      headers: {},
+      positions: [
+        { ply: 0, fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1' },
+        { ply: 1, fen: '4k3/8/8/8/8/8/8/4K3 w - - 0 1' }
+      ],
+      moves: [
+        {
+          ply: 1,
+          san: 'placeholder',
+          from: 'e1',
+          to: 'e1',
+          color: 'w',
+          pieceType: 'k',
+          pieceId: 'w-k-e1',
+          isEnPassant: false
+        }
+      ]
+    };
+    const engine = new ScriptedEngine([cp(0), 'no-score']);
+
+    const result = await analyzeGame(game, engine, new ChessJsEngine());
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const finalPly = result.value.plies[result.value.plies.length - 1]!;
+    expect(finalPly.evaluationAfter).toEqual({ kind: 'terminal', result: 'draw' });
+    expect('drawReason' in finalPly.evaluationAfter).toBe(false);
   });
 
   it('surfaces a genuine engine failure rather than silently substituting a score', async () => {

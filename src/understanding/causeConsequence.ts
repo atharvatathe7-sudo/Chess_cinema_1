@@ -91,9 +91,15 @@ function pickMechanism(
 function resolutionFor(
   moverRelativeSwingAtConsequence: number,
   materialNetForMover: number,
-  endsInMateForMover: boolean
+  endsInMateForMover: boolean,
+  endsInDraw: boolean
 ): CauseConsequenceRecord['resolution'] {
   if (endsInMateForMover) return 'forced-mate';
+  // Checked ahead of the swing-based bands on purpose: a defending side's
+  // stalemate save reads as a large POSITIVE mover-relative swing (losing
+  // -> drawn), which would otherwise satisfy the >= 300 "decisive
+  // advantage" check below and mislabel a draw as a win.
+  if (endsInDraw) return 'drawn';
   if (moverRelativeSwingAtConsequence >= 300) return 'decisive-advantage';
   if (materialNetForMover >= 200) return 'material-gain';
   if (moverRelativeSwingAtConsequence <= -100) return 'repelled';
@@ -137,6 +143,7 @@ export function buildCauseConsequenceRecord(inputs: CauseConsequenceInputs): Cau
     consequencePly.evaluationAfter.kind === 'terminal' &&
     ((ply.sideToMove === 'w' && consequencePly.evaluationAfter.result === 'white-wins') ||
       (ply.sideToMove === 'b' && consequencePly.evaluationAfter.result === 'black-wins'));
+  const endsInDraw = consequencePly.evaluationAfter.kind === 'terminal' && consequencePly.evaluationAfter.result === 'draw';
 
   return {
     id: `cc-${ply.ply}`,
@@ -165,7 +172,7 @@ export function buildCauseConsequenceRecord(inputs: CauseConsequenceInputs): Cau
     evaluationConsequence: { atPly: consequenceEndPly, swingCp: swingAtConsequence },
     materialConsequence: { atPly: consequenceEndPly, netMaterialChange: materialNetForMover },
     ...(sequence ? { multiMoveConsequence: { sequenceId: sequence.id, endPly: sequence.endPly } } : {}),
-    resolution: resolutionFor(swingAtConsequence, materialNetForMover, endsInMateForMover),
+    resolution: resolutionFor(swingAtConsequence, materialNetForMover, endsInMateForMover, endsInDraw),
     evidence: {
       basis: 'engine-eval',
       sourcePlies: sequence ? sequence.plies : [ply.ply],

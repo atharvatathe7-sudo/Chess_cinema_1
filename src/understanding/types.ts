@@ -1,4 +1,5 @@
 import type { Color, PieceType } from '../chess/ChessEngine';
+import type { PieceId } from '../pgn/types';
 import type { Evaluation, MateTransition } from '../analysis/types';
 
 /**
@@ -70,6 +71,19 @@ export interface PlySignals {
   readonly motifIds: readonly string[];
   readonly forcedSequenceId?: string;
   readonly isTurningPoint: boolean;
+  /**
+   * Phase 2.2.1 — stable piece identity, threaded straight from
+   * GameRecord.moves (assigned once, in Phase 1, by
+   * pgn/assignPieceIdentities.ts). Not recomputed here; this is the same
+   * PieceId a motif/threat/sequence on this ply can be joined back to.
+   */
+  readonly pieceId: PieceId;
+  readonly capturedPieceId?: PieceId;
+  /** True iff this ply's move was a promotion — direct read of MoveRecord.promotion, no inference. */
+  readonly isPromotion: boolean;
+  /** True iff isPromotion and the promotion piece is not a queen. */
+  readonly isUnderpromotion: boolean;
+  readonly promotionPieceType?: PieceType;
 }
 
 export interface PlySemantics {
@@ -202,7 +216,7 @@ export interface CauseConsequenceRecord {
   readonly evaluationConsequence: { readonly atPly: number; readonly swingCp: number };
   readonly materialConsequence: { readonly atPly: number; readonly netMaterialChange: number };
   readonly multiMoveConsequence?: { readonly sequenceId: string; readonly endPly: number };
-  readonly resolution: 'decisive-advantage' | 'material-gain' | 'forced-mate' | 'repelled' | 'unresolved';
+  readonly resolution: 'decisive-advantage' | 'material-gain' | 'forced-mate' | 'repelled' | 'unresolved' | 'drawn';
   readonly evidence: Evidence;
 }
 
@@ -221,6 +235,25 @@ export interface TurningPoint {
   readonly kind: TurningPointKind;
   readonly significance: SignificanceRecord;
   readonly causeConsequence: CauseConsequenceRecord;
+}
+
+// ============================================================
+// King mobility (Phase 2.2.1) — chess-rule only, via geometry.ts's
+// already-tested legalKingEscapeSquares.
+// ============================================================
+
+/**
+ * One record per ply, computed from that ply's fenBefore for its own
+ * sideToMove — the only king/position combination legalKingEscapeSquares
+ * is well-defined for (it only answers for the side actually to move).
+ * Consecutive records naturally alternate between both colors across the
+ * game, so both kings' mobility is covered without any special-casing.
+ */
+export interface KingMobilityRecord {
+  readonly ply: number;
+  readonly color: Color;
+  readonly legalEscapeSquares: readonly string[];
+  readonly legalEscapeSquareCount: number;
 }
 
 // ============================================================
@@ -287,6 +320,7 @@ export interface GameUnderstanding {
   readonly threats: readonly ThreatRecord[];
   readonly sequences: readonly ForcedSequence[];
   readonly turningPoints: readonly TurningPoint[];
+  readonly kingMobility: readonly KingMobilityRecord[];
   readonly gameArc: GameArcSummary;
   readonly narrativeSignals: readonly NarrativeArchetypeSignal[];
   readonly settings: UnderstandingSettings;

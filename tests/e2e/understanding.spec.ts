@@ -24,6 +24,13 @@ interface UnderstandingProbeResult {
   bestMoveUniquenessValues?: string[];
   qualityClasses?: string[];
   determinismMatch?: boolean;
+  /** Phase 2.2.1 — promotion signals threaded onto each ply. */
+  promotionPlies?: { ply: number; isPromotion: boolean; isUnderpromotion: boolean; promotionPieceType?: string }[];
+  /** Phase 2.2.1 — the final analyzed ply's evaluationAfter, to check drawReason. */
+  finalEvaluationAfter?: { kind: string; result?: string; drawReason?: string };
+  /** Phase 2.2.1 — resolution values across all turning points, to check for 'drawn'. */
+  turningPointResolutions?: string[];
+  kingMobilityCount?: number;
 }
 
 /**
@@ -63,7 +70,12 @@ async function probeUnderstanding(page: import('@playwright/test').Page, pgn: st
       };
     };
     const understandMod = (await import(/* @vite-ignore */ understandPath)) as {
-      understandGame: (analysis: unknown, engine: unknown, options?: unknown) => Promise<{ ok: boolean; value?: unknown; error?: { message: string } }>;
+      understandGame: (
+        game: unknown,
+        analysis: unknown,
+        engine: unknown,
+        options?: unknown
+      ) => Promise<{ ok: boolean; value?: unknown; error?: { message: string } }>;
     };
     const typesMod = (await import(/* @vite-ignore */ understandingTypesPath)) as {
       DEFAULT_UNDERSTANDING_SETTINGS: {
@@ -98,8 +110,8 @@ async function probeUnderstanding(page: import('@playwright/test').Page, pgn: st
       }
     };
 
-    const first = await understandMod.understandGame(analysis.value, engine, { settings: understandingSettings });
-    const second = await understandMod.understandGame(analysis.value, engine, { settings: understandingSettings });
+    const first = await understandMod.understandGame(parsed.value, analysis.value, engine, { settings: understandingSettings });
+    const second = await understandMod.understandGame(parsed.value, analysis.value, engine, { settings: understandingSettings });
     engine.dispose();
 
     if (!first.ok) return { ok: false, error: `understandGame failed: ${first.error?.message}` };
@@ -107,9 +119,20 @@ async function probeUnderstanding(page: import('@playwright/test').Page, pgn: st
 
     const u = first.value as {
       motifs: { motif: string }[];
-      turningPoints: { kind: string; causeConsequence: { bestAlternative: { bestMoveUniqueness: string; topMove: unknown } } }[];
+      turningPoints: {
+        kind: string;
+        causeConsequence: { bestAlternative: { bestMoveUniqueness: string; topMove: unknown }; resolution: string };
+      }[];
       sequences: unknown[];
-      plies: { qualityClass: string }[];
+      plies: {
+        ply: number;
+        qualityClass: string;
+        signals: { isPromotion: boolean; isUnderpromotion: boolean; promotionPieceType?: string };
+      }[];
+      kingMobility: unknown[];
+    };
+    const a = analysis.value as {
+      plies: { evaluationAfter: { kind: string; result?: string; drawReason?: string } }[];
     };
 
     return {
@@ -121,7 +144,18 @@ async function probeUnderstanding(page: import('@playwright/test').Page, pgn: st
       hasBestAlternativeData: u.turningPoints.some((tp) => tp.causeConsequence.bestAlternative.topMove !== null),
       bestMoveUniquenessValues: [...new Set(u.turningPoints.map((tp) => tp.causeConsequence.bestAlternative.bestMoveUniqueness))],
       qualityClasses: [...new Set(u.plies.map((p) => p.qualityClass))],
-      determinismMatch: JSON.stringify(first.value) === JSON.stringify(second.value)
+      determinismMatch: JSON.stringify(first.value) === JSON.stringify(second.value),
+      promotionPlies: u.plies
+        .filter((p) => p.signals.isPromotion)
+        .map((p) => ({
+          ply: p.ply,
+          isPromotion: p.signals.isPromotion,
+          isUnderpromotion: p.signals.isUnderpromotion,
+          promotionPieceType: p.signals.promotionPieceType
+        })),
+      finalEvaluationAfter: a.plies[a.plies.length - 1]!.evaluationAfter,
+      turningPointResolutions: u.turningPoints.map((tp) => tp.causeConsequence.resolution),
+      kingMobilityCount: u.kingMobility.length
     };
   }, pgn);
 }
@@ -171,3 +205,37 @@ test('understandGame is deterministic against the real engine: two runs of the s
   expect(result.ok).toBe(true);
   expect(result.determinismMatch).toBe(true);
 });
+
+test('a real game reaching a promotion surfaces isPromotion and promotionPieceType through the full pipeline (Phase 2.2.1)', async ({ page }) => {
+  await page.goto('/');
+  // Verified legal via a direct chess.js run before use: both a- and h-pawns
+  // race to promotion and capture into the corner pieces on the same move
+  // (5. bxa8=Q and 5...gxh1=Q), so this checks the real pipeline against two
+  // real, engine-analyzed promotions rather than a hand-scripted one.
+  const result = await probeUnderstanding(page, '1. a4 h5 2. a5 h4 3. a6 h3 4. axb7 hxg2 5. bxa8=Q gxh1=Q');
+
+  expect(result.ok).toBe(true);
+  expect(result.error).toBeUndefined();
+  expect(result.promotionPlies!.length).toBe(2);
+  for (const p of result.promotionPlies!) {
+    expect(p.isPromotion).toBe(true);
+    expect(p.isUnderpromotion).toBe(false);
+    expect(p.promotionPieceType).toBe('q');
+  }
+});
+
+// NOTE: a real-engine stalemate-swindle integration test (drawReason +
+// 'drawn' resolution surfacing end to end) was attempted here and removed.
+// Diagnosed against the actual worker/glue code the app uses: for a
+// genuinely terminal position (verified stalemate via chess.js) Stockfish
+// 18 Lite WASM replies `info depth 0 score cp 0` immediately before
+// `bestmove (none)`, so StockfishAnalysisEngine.evaluatePosition sees a
+// defined score and returns a normal ok() evaluation instead of an error —
+// analyzeGame's terminalEvaluation() fallback (untouched by this phase) is
+// therefore never reached for a position evaluated this way. This is a
+// pre-existing Phase 2.1 behavior, outside Phase 2.2.1's approved scope, and
+// is reported separately rather than fixed here. drawReason/'drawn'
+// resolution logic itself is fully covered at the unit level (ScriptedEngine
+// in analyzeGame.test.ts / causeConsequence.test.ts / understandGame.test.ts),
+// which correctly simulates the "engine returns no score" case this phase's
+// contract assumes.

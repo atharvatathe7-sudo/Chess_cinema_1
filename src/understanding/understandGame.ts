@@ -1,5 +1,6 @@
 import type { GameAnalysis } from '../analysis/types';
 import type { AnalysisEngine } from '../analysis/AnalysisEngine';
+import type { GameRecord, MoveRecord } from '../pgn/types';
 import { err, ok, type Result } from '../errors/Result';
 import type { AppError } from '../errors/AppError';
 import { analysisCancelledError } from '../analysis/analysisErrors';
@@ -7,6 +8,7 @@ import {
   DEFAULT_UNDERSTANDING_SETTINGS,
   UNDERSTANDING_SCHEMA_VERSION,
   type GameUnderstanding,
+  type KingMobilityRecord,
   type PlySemantics,
   type PlySignals,
   type ThreatRecord,
@@ -21,16 +23,21 @@ import { computeSignificance, withAdditionalReason } from './significance';
 import { runFollowUpQueries } from './followUpBudget';
 import { buildBestAlternativeRecord, buildCauseConsequenceRecord, buildTurningPoint } from './causeConsequence';
 import { computeGameArc, computeNarrativeSignals } from './gameArc';
-import { boardFromFen, materialBalance } from './geometry';
+import { boardFromFen, legalKingEscapeSquares, materialBalance } from './geometry';
 
 /**
- * Top-level Phase 2.2 orchestration: (GameRecord's own GameAnalysis) ->
- * GameUnderstanding. Consumes Phase 2.1's output only — it does not
- * re-run the per-position analysis loop, does not touch the Renderer,
- * Timeline, or AppState, and calls the AnalysisEngine only for the
- * bounded MultiPV follow-up (see followUpBudget.ts). Everything else is
- * pure, deterministic orchestration over data Phase 2.1 already computed
- * plus this module's own chess-rule geometry.
+ * Top-level Phase 2.2 orchestration: (GameRecord, GameRecord's own
+ * GameAnalysis) -> GameUnderstanding. Consumes Phase 2.1's output only —
+ * it does not re-run the per-position analysis loop, does not touch the
+ * Renderer, Timeline, or AppState, and calls the AnalysisEngine only for
+ * the bounded MultiPV follow-up (see followUpBudget.ts). Everything else
+ * is pure, deterministic orchestration over data Phase 2.1 already
+ * computed plus this module's own chess-rule geometry.
+ *
+ * `game` is used only for its already-assigned, already-tested piece
+ * identity (GameRecord.moves[].pieceId/capturedPieceId, minted once in
+ * Phase 1 by pgn/assignPieceIdentities.ts) — no second piece-identity
+ * resolver is introduced here.
  */
 
 export interface UnderstandGameOptions {
@@ -40,6 +47,7 @@ export interface UnderstandGameOptions {
 }
 
 export async function understandGame(
+  game: GameRecord,
   analysis: GameAnalysis,
   engine: AnalysisEngine,
   options: UnderstandGameOptions = {}
@@ -55,6 +63,7 @@ export async function understandGame(
       threats: [],
       sequences: [],
       turningPoints: [],
+      kingMobility: [],
       gameArc: computeGameArc([]),
       narrativeSignals: [],
       settings
@@ -75,6 +84,7 @@ export async function understandGame(
   const multiPvByPly = followUp.value.multiPvByPly;
 
   const pliesByNumber = new Map(plies.map((p) => [p.ply, p]));
+  const movesByPly = new Map<number, MoveRecord>(game.moves.map((m) => [m.ply, m]));
   const sequenceByPly = new Map<number, (typeof sequences)[number]>();
   for (const seq of sequences) for (const p of seq.plies) sequenceByPly.set(p, seq);
   const sequenceTerminalPlies = new Set(sequences.map((s) => s.endPly));
@@ -110,11 +120,21 @@ export async function understandGame(
     const threatsCreatedHere = threatsCreatedByPly.get(ply.ply) ?? [];
     const threatsResolvedHere = threatsResolvedByPly.get(ply.ply) ?? [];
 
+    const move = movesByPly.get(ply.ply);
+    if (!move) {
+      throw new Error(`understandGame: no MoveRecord for ply ${ply.ply} — game and analysis must come from the same GameRecord`);
+    }
+
     const signals: PlySignals = {
       ...base,
       motifIds: motifsForPly.map((m) => m.id),
       ...(sequenceForPly ? { forcedSequenceId: sequenceForPly.id } : {}),
-      isTurningPoint: false
+      isTurningPoint: false,
+      pieceId: move.pieceId,
+      ...(move.capturedPieceId !== undefined ? { capturedPieceId: move.capturedPieceId } : {}),
+      isPromotion: move.promotion !== undefined,
+      isUnderpromotion: move.promotion !== undefined && move.promotion !== 'q',
+      ...(move.promotion !== undefined ? { promotionPieceType: move.promotion } : {})
     };
 
     const qualityClass = qualityClassFor(ply);
@@ -169,6 +189,20 @@ export async function understandGame(
     if (turningPoint) turningPoints.push(turningPoint);
   }
 
+  // One record per ply, from that ply's own fenBefore/sideToMove — the only
+  // king/position pairing legalKingEscapeSquares is well-defined for.
+  // Consecutive records already alternate between both colors, so both
+  // kings' mobility is covered across the game without extra computation.
+  const kingMobility: KingMobilityRecord[] = plies.map((ply) => {
+    const legalEscapeSquares = legalKingEscapeSquares(ply.fenBefore, ply.sideToMove);
+    return {
+      ply: ply.ply,
+      color: ply.sideToMove,
+      legalEscapeSquares,
+      legalEscapeSquareCount: legalEscapeSquares.length
+    };
+  });
+
   const gameArc = computeGameArc(plies);
   const narrativeSignals = computeNarrativeSignals(sequences, turningPoints);
 
@@ -179,6 +213,7 @@ export async function understandGame(
     threats,
     sequences,
     turningPoints,
+    kingMobility,
     gameArc,
     narrativeSignals,
     settings

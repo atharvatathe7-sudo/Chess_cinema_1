@@ -47,7 +47,10 @@ const noSignals: PlySignals = {
   deliversCheck: false,
   deliversMate: false,
   motifIds: [],
-  isTurningPoint: false
+  isTurningPoint: false,
+  pieceId: 'w-p-e2',
+  isPromotion: false,
+  isUnderpromotion: false
 };
 
 describe('buildBestAlternativeRecord', () => {
@@ -208,6 +211,35 @@ describe('buildCauseConsequenceRecord', () => {
     });
     expect(record.evaluationConsequence.atPly).toBe(2);
     expect(record.multiMoveConsequence).toEqual({ sequenceId: 'seq-0', endPly: 2 });
+  });
+
+  it('resolves to drawn rather than decisive-advantage when the consequence is a stalemate save (Phase 2.2.1)', () => {
+    // White was losing badly (-500 white-relative) and this move reaches a
+    // stalemate. The mover-relative swing is a large POSITIVE number (losing
+    // -> drawn reads as an improvement) — exactly the case that, without the
+    // dedicated drawn check, would satisfy the >= 300 "decisive-advantage"
+    // band and mislabel a draw as a win.
+    const p = ply({
+      ply: 1,
+      sideToMove: 'w',
+      evaluationBefore: { kind: 'cp', cp: -500 },
+      evaluationAfter: { kind: 'terminal', result: 'draw', drawReason: 'stalemate' },
+      swingCp: 500,
+      swingForMoverCp: 500
+    });
+    const record = buildCauseConsequenceRecord({
+      ply: p,
+      signals: noSignals,
+      motifsForPly: [],
+      threatsCreatedHere: [],
+      threatsResolvedHere: [],
+      bestAlternative: buildBestAlternativeRecord(p, true, undefined, 30),
+      reply: undefined,
+      forcingReason: null,
+      sequence: undefined,
+      allPliesByNumber: new Map([[1, p]])
+    });
+    expect(record.resolution).toBe('drawn');
   });
 });
 

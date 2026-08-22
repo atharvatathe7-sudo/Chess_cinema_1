@@ -40,10 +40,20 @@ export type Evaluation =
    * mate coming", and modelling it explicitly avoids inventing a fake
    * centipawn number for the most decisive position in the game.
    */
-  | { readonly kind: 'terminal'; readonly result: TerminalResult };
+  | { readonly kind: 'terminal'; readonly result: TerminalResult; readonly drawReason?: DrawReason };
 
 /** Outcome of a finished position, from the game's point of view. */
 export type TerminalResult = 'white-wins' | 'black-wins' | 'draw';
+
+/**
+ * Present only when result === 'draw' and the draw was specifically a
+ * stalemate — ChessEngine.status() already distinguishes 'stalemate' from
+ * other draw causes, and this field is the one place that distinction is
+ * preserved rather than discarded. Absent for every other draw cause
+ * (repetition, 50-move, insufficient material), which chess.js does not
+ * currently expose separately through ChessEngine.
+ */
+export type DrawReason = 'stalemate';
 
 /** A single engine evaluation of one position, in our own vocabulary (never Stockfish's). */
 export interface PositionEvaluation {

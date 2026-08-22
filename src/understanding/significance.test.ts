@@ -30,7 +30,10 @@ const noSignals: PlySignals = {
   deliversCheck: false,
   deliversMate: false,
   motifIds: [],
-  isTurningPoint: false
+  isTurningPoint: false,
+  pieceId: 'w-p-e2',
+  isPromotion: false,
+  isUnderpromotion: false
 };
 
 describe('computeSignificance', () => {

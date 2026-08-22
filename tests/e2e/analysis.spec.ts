@@ -161,3 +161,36 @@ test('a broken engine payload produces a diagnosable error, not a bare timeout',
     expect(result.causeText.length).toBeGreaterThan(0);
   }
 });
+
+test('analysis works under a CSP that allows worker-src blob: but not connect-src blob:', async ({ page }) => {
+  // Reproduces the exact restriction the Android Artifact diagnostic found:
+  // Worker creation from a blob: URL succeeds, but a fetch() to a blob: URL
+  // issued from *inside* that worker is blocked, because worker-src and
+  // connect-src are independent CSP directives. This applies a real HTTP
+  // Content-Security-Policy header (not a meta tag) so Chromium's own CSP
+  // engine enforces it against the worker's internal fetch, the same way it
+  // does in the Artifact sandbox — proving engineAssets.ts's fetch-intercept
+  // prelude genuinely avoids that network path rather than merely working
+  // around it in an environment where the restriction never applied.
+  await page.route('**/*', async (route) => {
+    const request = route.request();
+    if (request.resourceType() !== 'document') {
+      await route.continue();
+      return;
+    }
+    const response = await route.fetch();
+    await route.fulfill({
+      response,
+      headers: {
+        ...response.headers(),
+        'content-security-policy': "connect-src 'self'; worker-src blob: 'self';"
+      }
+    });
+  });
+
+  await loadShortGame(page, '1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 4. Ba4 Nf6 5. O-O');
+
+  await page.locator('#analyze-btn').click();
+  await expect(page.locator('#analysis-status')).toContainText('Analysis complete', { timeout: 60_000 });
+  await expect(page.locator('#analysis-status')).not.toContainText('failed to load');
+});

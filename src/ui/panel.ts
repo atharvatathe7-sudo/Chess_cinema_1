@@ -5,6 +5,9 @@ import { loadImage } from '../assets/browserPieceLoader';
 import { createInitialState, type AppState } from '../state/AppState';
 import { Store } from '../state/store';
 import { goToNextMove, goToPreviousMove, loadPgn, restart, seekTo, setPlaying } from '../state/actions';
+import { cancelAnalysis, runAnalysis } from '../state/analysisActions';
+import { StockfishAnalysisEngine } from '../analysis/StockfishAnalysisEngine';
+import { formatEvaluation, formatSwingCp } from '../analysis/evaluation';
 import { currentMoveNumber, totalMoveCount } from '../timeline/navigation';
 import { PreviewLoop, previewTick } from '../preview/PreviewLoop';
 import { runExport } from '../export/runExport';
@@ -49,7 +52,7 @@ export function mountPanel(root: HTMLElement): void {
       .cc-btn:disabled { opacity: 0.45; }
     </style>
     <div style="font-family:system-ui,sans-serif;max-width:560px;margin:0 auto;padding:16px;display:flex;flex-direction:column;gap:12px;box-sizing:border-box;">
-      <h1 style="font-size:16px;margin:0;">Chess Cinema — Phase 1.1</h1>
+      <h1 style="font-size:16px;margin:0;">Chess Cinema — Phase 2.1</h1>
       <textarea id="pgn-input" rows="4" style="width:100%;box-sizing:border-box;" placeholder="Paste PGN here">1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 4. Ba4 Nf6 5. O-O Be7</textarea>
       <button id="load-btn" class="cc-btn">Load PGN</button>
       <div id="error" style="color:#b00020;"></div>
@@ -73,6 +76,15 @@ export function mountPanel(root: HTMLElement): void {
         <button id="export-btn" class="cc-btn" disabled>Export PNG sequence</button>
         <span id="export-progress"></span>
       </div>
+
+      <hr style="border:none;border-top:1px solid #ddd;margin:4px 0;" />
+
+      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:center;">
+        <button id="analyze-btn" class="cc-btn" disabled>Analyze Game</button>
+        <button id="cancel-analysis-btn" class="cc-btn" disabled>Cancel</button>
+      </div>
+      <div id="analysis-status" style="text-align:center;font-size:13px;color:#555;font-variant-numeric:tabular-nums;"></div>
+      <div id="analysis-candidates" style="font-size:13px;"></div>
     </div>
   `;
 
@@ -88,6 +100,10 @@ export function mountPanel(root: HTMLElement): void {
   const nextBtn = root.querySelector<HTMLButtonElement>('#next-btn')!;
   const exportBtn = root.querySelector<HTMLButtonElement>('#export-btn')!;
   const exportProgress = root.querySelector<HTMLSpanElement>('#export-progress')!;
+  const analyzeBtn = root.querySelector<HTMLButtonElement>('#analyze-btn')!;
+  const cancelAnalysisBtn = root.querySelector<HTMLButtonElement>('#cancel-analysis-btn')!;
+  const analysisStatus = root.querySelector<HTMLDivElement>('#analysis-status')!;
+  const analysisCandidates = root.querySelector<HTMLDivElement>('#analysis-candidates')!;
 
   const dpr = window.devicePixelRatio || 1;
   canvas.width = Math.round(boardCssSize * dpr);
@@ -124,6 +140,55 @@ export function mountPanel(root: HTMLElement): void {
     prevBtn.disabled = !loaded;
     nextBtn.disabled = !loaded;
     exportBtn.disabled = !loaded;
+    analyzeBtn.disabled = !loaded;
+  }
+
+  function renderAnalysis(state: AppState): void {
+    const { status, progress, result, error } = state.analysis;
+    const running = status === 'running';
+
+    analyzeBtn.disabled = state.game === null || running;
+    cancelAnalysisBtn.disabled = !running;
+    analyzeBtn.textContent = running ? 'Analyzing…' : 'Analyze Game';
+
+    if (running) {
+      analysisStatus.textContent = progress
+        ? `Analyzing ${progress.completed} / ${progress.total}`
+        : 'Starting analysis…';
+    } else if (status === 'error') {
+      analysisStatus.textContent = error?.message ?? 'Analysis failed.';
+    } else if (status === 'complete' && result) {
+      analysisStatus.textContent = `Analysis complete — ${result.plies.length} moves at depth ${result.settings.depth}.`;
+    } else {
+      analysisStatus.textContent = '';
+    }
+
+    if (status === 'complete' && result) {
+      if (result.candidates.length === 0) {
+        analysisCandidates.innerHTML =
+          '<div style="color:#555;">No significant evaluation swings found.</div>';
+      } else {
+        const rows = result.candidates
+          .map((c) => {
+            const mover = c.sideToMove === 'w' ? 'White' : 'Black';
+            const mate = c.mateTransition === 'none' ? '' : ` · ${c.mateTransition}`;
+            return `<li style="padding:6px 0;border-bottom:1px solid #eee;">
+              <strong>Move ${c.moveNumber} (${mover}) ${escapeHtml(c.movePlayedSan)}</strong><br />
+              <span style="color:#555;font-variant-numeric:tabular-nums;">
+                ${escapeHtml(formatEvaluation(c.evaluationBefore))} →
+                ${escapeHtml(formatEvaluation(c.evaluationAfter))} ·
+                swing ${escapeHtml(formatSwingCp(c.swingForMoverCp))} for ${mover}${escapeHtml(mate)}
+              </span>
+            </li>`;
+          })
+          .join('');
+        analysisCandidates.innerHTML = `
+          <div style="font-weight:600;margin-bottom:4px;">Candidate moments (${result.candidates.length})</div>
+          <ul style="list-style:none;padding:0;margin:0;">${rows}</ul>`;
+      }
+    } else {
+      analysisCandidates.innerHTML = '';
+    }
   }
 
   function refreshUiFromState(): void {
@@ -145,6 +210,8 @@ export function mountPanel(root: HTMLElement): void {
       moveIndicator.textContent = '';
       timeline.setValue(0, 0);
     }
+
+    renderAnalysis(state);
   }
 
   store.subscribe(refreshUiFromState);
@@ -165,6 +232,20 @@ export function mountPanel(root: HTMLElement): void {
 
   exportBtn.addEventListener('click', () => {
     void handleExport();
+  });
+
+  analyzeBtn.addEventListener('click', () => {
+    setPlaying(store, false);
+    // A fresh engine per run keeps a failed or cancelled run from leaving a
+    // half-dead worker behind for the next one.
+    const analysisEngine = new StockfishAnalysisEngine();
+    void runAnalysis(store, analysisEngine, new ChessJsEngine()).finally(() => {
+      analysisEngine.dispose();
+    });
+  });
+
+  cancelAnalysisBtn.addEventListener('click', () => {
+    cancelAnalysis();
   });
 
   async function handleExport(): Promise<void> {
@@ -200,6 +281,15 @@ export function mountPanel(root: HTMLElement): void {
     }
     previewLoop.start();
   });
+}
+
+/** Move text and engine strings are inserted as HTML, so they are escaped first. */
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 function downloadBlob(blob: Blob, filename: string): void {

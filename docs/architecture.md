@@ -543,3 +543,95 @@ state, no second renderer, no second clock.
   `tests/e2e/scrubbing.spec.ts` (Playwright against the real UI,
   including an emulated-touch-device suite exercising `page.touchscreen`
   and touch-typed pointer events).
+
+## 17. Phase 2.1 — Chess Intelligence Foundation (Stockfish analysis)
+
+Adds engine analysis of a loaded game: per-ply evaluations, evaluation
+swings, and deterministically ranked candidate moments. Purely additive —
+no renderer change, no timeline/playback change, no new clock.
+
+### Two engines, two jobs
+
+`chess/ChessEngine` and `analysis/AnalysisEngine` are deliberately separate
+interfaces:
+
+- **ChessEngine** — the rules. What is legal, what position results, is it
+  mate. Instant, always available, required for the app to function.
+- **AnalysisEngine** — the opinion. How good is this position, what would
+  be best. Slow, cancellable, and entirely optional: with no analysis
+  engine at all, a game still loads, renders and plays back.
+
+Stockfish *implements* AnalysisEngine. It never replaces ChessEngine, and
+nothing in the rules or rendering path depends on it.
+
+### Engine build and why
+
+`stockfish@18.0.8` (npm, GPL-3.0), specifically the
+**lite single-threaded** build — `stockfish-18-lite-single.js` +
+`stockfish-18-lite-single.wasm` (~7 MB).
+
+- *Lite* because the full NNUE build is ~113 MB per wasm file, which is
+  unusable in a browser. Lite is still far stronger than any human.
+- *Single-threaded* because the multi-threaded builds require
+  `SharedArrayBuffer`, which requires COOP/COEP response headers. A static
+  deployment cannot set those, and neither can the Artifact sandbox. The
+  single-threaded build needs no special headers anywhere.
+
+The two files are copied out of `node_modules` into `public/engine/` by
+`scripts/sync-engine.mjs` (run automatically before dev/build) rather than
+committed, so the served engine can never drift from the pinned lockfile
+version. Stockfish's GPLv3 text is copied alongside the binaries.
+
+### Worker architecture
+
+Stockfish runs in a dedicated Web Worker and speaks UCI over `postMessage`.
+It is loaded exactly one way, in every environment:
+
+1. Obtain the engine bytes (fetched from `/engine/` normally; read from an
+   inlined base64 payload in the single-file Artifact build).
+2. Wrap both in blob URLs — the wasm blob must be typed `application/wasm`
+   because the glue uses `WebAssembly.instantiateStreaming`.
+3. `new Worker(glueBlobUrl + '#' + encodeURIComponent(wasmBlobUrl))` —
+   stockfish.js reads its wasm location from its own URL hash.
+
+Only step 1 varies by environment; the worker construction, protocol and
+analysis code are identical, so there is no second engine integration and
+no mock. Verified working in Chromium including under the Artifact CSP.
+
+Because the engine is on a worker thread, the main thread stays free: the
+board keeps rendering and Cancel stays responsive throughout a run.
+
+### Evaluation sign convention
+
+Every `Evaluation` is **white-relative**, documented in full at the top of
+`analysis/types.ts`. UCI reports scores relative to the side to move, and
+`analysis/evaluation.ts:fromUciScore()` is the single permitted place that
+conversion happens.
+
+Two consequences worth stating explicitly:
+
+- `swingCp` is white-relative; `swingForMoverCp` is the same change seen by
+  the player who moved, so negative always means "the mover's own position
+  got worse" for either colour. `+2.0 -> -3.0` is a five-pawn loss if White
+  moved and a five-pawn gain if Black moved.
+- `score mate 0` means the side to move **is already checkmated**, not that
+  someone has a mate coming. Zero carries no sign, so it is mapped to an
+  explicit `terminal` evaluation instead — without this, every game ending
+  in checkmate has its result inverted (caught by the real-engine
+  integration test, not by unit tests).
+
+Evaluations are clamped to +/-1000cp before differencing so that a swing
+measures how much the practical outcome changed, rather than letting an
+already-lost position get "more lost".
+
+### Candidates and ranking
+
+`analysis/candidates.ts` flags plies where the mover lost significant
+ground, and ranks them deterministically by `lossForMover + mateTransitionBonus`,
+tie-broken by ply so the ordering is total and reproducible. No randomness,
+no clock, no model calls.
+
+These are called `EvaluationSwingCandidate` and nothing more. Phase 2.1
+deliberately does **not** label moves Brilliant/Great/Inaccuracy/Mistake/
+Blunder — those imply a classification system with thresholds and intent
+detection this phase does not have.

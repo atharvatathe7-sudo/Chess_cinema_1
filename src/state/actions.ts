@@ -56,7 +56,10 @@ export function loadPgn(
     ...s,
     game: { gameRecord, timeline },
     playback: { ...s.playback, activeSceneId: firstScene.id, logicalTimeMs: 0, playing: false },
-    ui: { ...s.ui, pendingError: null }
+    ui: { ...s.ui, pendingError: null },
+    // Any previous analysis describes the previous game, so it is dropped
+    // rather than left to be read against the newly loaded one.
+    analysis: { status: 'idle', progress: null, result: null, error: null }
   }));
 
   return ok(undefined);

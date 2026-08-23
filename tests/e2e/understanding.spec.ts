@@ -31,6 +31,8 @@ interface UnderstandingProbeResult {
   /** Phase 2.2.1 — resolution values across all turning points, to check for 'drawn'. */
   turningPointResolutions?: string[];
   kingMobilityCount?: number;
+  /** Phase 2.3.1 — narrative archetype names, to check for 'king-hunt'. */
+  narrativeArchetypes?: string[];
 }
 
 /**
@@ -130,6 +132,7 @@ async function probeUnderstanding(page: import('@playwright/test').Page, pgn: st
         signals: { isPromotion: boolean; isUnderpromotion: boolean; promotionPieceType?: string };
       }[];
       kingMobility: unknown[];
+      narrativeSignals: { archetype: string }[];
     };
     const a = analysis.value as {
       plies: { evaluationAfter: { kind: string; result?: string; drawReason?: string } }[];
@@ -155,7 +158,8 @@ async function probeUnderstanding(page: import('@playwright/test').Page, pgn: st
         })),
       finalEvaluationAfter: a.plies[a.plies.length - 1]!.evaluationAfter,
       turningPointResolutions: u.turningPoints.map((tp) => tp.causeConsequence.resolution),
-      kingMobilityCount: u.kingMobility.length
+      kingMobilityCount: u.kingMobility.length,
+      narrativeArchetypes: u.narrativeSignals.map((s) => s.archetype)
     };
   }, pgn);
 }
@@ -224,18 +228,53 @@ test('a real game reaching a promotion surfaces isPromotion and promotionPieceTy
   }
 });
 
-// NOTE: a real-engine stalemate-swindle integration test (drawReason +
-// 'drawn' resolution surfacing end to end) was attempted here and removed.
-// Diagnosed against the actual worker/glue code the app uses: for a
-// genuinely terminal position (verified stalemate via chess.js) Stockfish
-// 18 Lite WASM replies `info depth 0 score cp 0` immediately before
-// `bestmove (none)`, so StockfishAnalysisEngine.evaluatePosition sees a
-// defined score and returns a normal ok() evaluation instead of an error —
-// analyzeGame's terminalEvaluation() fallback (untouched by this phase) is
-// therefore never reached for a position evaluated this way. This is a
-// pre-existing Phase 2.1 behavior, outside Phase 2.2.1's approved scope, and
-// is reported separately rather than fixed here. drawReason/'drawn'
-// resolution logic itself is fully covered at the unit level (ScriptedEngine
-// in analyzeGame.test.ts / causeConsequence.test.ts / understandGame.test.ts),
-// which correctly simulates the "engine returns no score" case this phase's
-// contract assumes.
+test('a real stalemate game surfaces drawReason and a drawn resolution end to end (Phase 2.3.1 fix)', async ({ page }) => {
+  await page.goto('/');
+  // Verified legal and genuinely stalemate (not checkmate) in Phase 2.2.1.
+  // Previously, StockfishAnalysisEngine.evaluatePosition saw the engine's
+  // spurious `info depth 0 score cp 0` line before `bestmove (none)` and
+  // returned an ordinary ok() cp evaluation instead of erroring into
+  // analyzeGame's terminalEvaluation() fallback — so drawReason never
+  // surfaced here. Phase 2.3.1 fixed evaluatePosition to also check
+  // outcome.bestMove === null, so this now reaches the real terminal fact.
+  const result = await probeUnderstanding(
+    page,
+    '1. e3 a5 2. Qh5 Ra6 3. Qxa5 h5 4. Qxc7 Rah6 5. h4 f6 6. Qxd7+ Kf7 7. Qxb7 Qd3 8. Qxb8 Qh7 9. Qxc8 Kg6 10. Qe6'
+  );
+
+  expect(result.ok).toBe(true);
+  expect(result.error).toBeUndefined();
+  expect(result.finalEvaluationAfter).toEqual({ kind: 'terminal', result: 'draw', drawReason: 'stalemate' });
+  expect(result.turningPointResolutions).toContain('drawn');
+});
+
+test('a real checkmate remains correctly terminal after the Phase 2.3.1 stalemate fix (regression)', async ({ page }) => {
+  await page.goto('/');
+  // Checkmate was already correct before this fix (Stockfish reports
+  // `score mate 0`, which fromUciScore already special-cases) — this proves
+  // the fix, scoped to the non-mate-scored case, left that path untouched.
+  const result = await probeUnderstanding(page, '1. e4 e5 2. Bc4 Bc5 3. Qh5 Nf6 4. Qxf7#');
+
+  expect(result.ok).toBe(true);
+  expect(result.error).toBeUndefined();
+  expect(result.finalEvaluationAfter).toEqual({ kind: 'terminal', result: 'white-wins' });
+});
+
+test('a real alternating-check king hunt (the Evergreen Game) now produces the king-hunt narrative signal (Phase 2.3.1 fix)', async ({ page }) => {
+  await page.goto('/');
+  // The Evergreen Game (Anderssen-Dufresne, 1852), verified legal via a
+  // direct chess.js run. Its real finishing combination — 22.Bf5+ Ke8
+  // 23.Bd7+ Kf8 24.Bxe7# — was previously split by detectForcedSequences
+  // (unmodified here) into several short 2-ply check sequences, each below
+  // the king-hunt gate's 4-ply floor. Phase 2.3.1 added adjacency grouping
+  // in computeNarrativeSignals (understanding/gameArc.ts only) to recover
+  // the real, continuous checking run from that existing evidence.
+  const result = await probeUnderstanding(
+    page,
+    '1. e4 e5 2. Nf3 Nc6 3. Bc4 Bc5 4. b4 Bxb4 5. c3 Ba5 6. d4 exd4 7. O-O d3 8. Qb3 Qf6 9. e5 Qg6 10. Re1 Nge7 11. Ba3 b5 12. Qxb5 Rb8 13. Qa4 Bb6 14. Nbd2 Bb7 15. Ne4 Qf5 16. Bxd3 Qh5 17. Nf6+ gxf6 18. exf6 Rg8 19. Rad1 Qxf3 20. Rxe7+ Nxe7 21. Qxd7+ Kxd7 22. Bf5+ Ke8 23. Bd7+ Kf8 24. Bxe7#'
+  );
+
+  expect(result.ok).toBe(true);
+  expect(result.error).toBeUndefined();
+  expect(result.narrativeArchetypes).toContain('king-hunt');
+});

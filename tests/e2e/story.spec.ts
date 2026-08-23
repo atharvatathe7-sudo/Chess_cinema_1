@@ -163,6 +163,14 @@ test('a real stalemate game surfaces drawReason end to end, and correctly does N
   // swindle, and buildStoryPlan's stalemate-swindle detector must correctly
   // decline to flag it (see src/story/archetypes.test.ts for the equivalent
   // hand-built positive/negative unit coverage of this exact distinction).
+  //
+  // Previously the real engine's terminal quirk (info depth 0 score cp 0
+  // before bestmove (none)) prevented drawReason from ever surfacing here,
+  // so this assertion was guarded to only run when it happened to appear.
+  // Phase 2.3.1 fixed StockfishAnalysisEngine.evaluatePosition (not this
+  // file, not story/archetypes.ts) to recognize outcome.bestMove === null
+  // as the terminal signal — drawReason now surfaces reliably, so both
+  // assertions below run unconditionally.
   const result = await probeStory(
     page,
     '1. e3 a5 2. Qh5 Ra6 3. Qxa5 h5 4. Qxc7 Rah6 5. h4 f6 6. Qxd7+ Kf7 7. Qxb7 Qd3 8. Qxb8 Qh7 9. Qxc8 Kg6 10. Qe6'
@@ -170,15 +178,8 @@ test('a real stalemate game surfaces drawReason end to end, and correctly does N
 
   expect(result.ok).toBe(true);
   expect(result.error).toBeUndefined();
-
-  // Guard against the already-reported, deliberately-unfixed Phase 2.1
-  // Stockfish quirk (info depth 0 score cp 0 before bestmove (none) on a
-  // legal-move-free position): only assert on drawReason when the real
-  // engine actually surfaced it this run, exactly as
-  // tests/e2e/understanding.spec.ts already does for the same PGN.
-  if (result.finalDrawReason === 'stalemate') {
-    expect(result.archetypeNames).not.toContain('stalemate-swindle');
-  }
+  expect(result.finalDrawReason).toBe('stalemate');
+  expect(result.archetypeNames).not.toContain('stalemate-swindle');
 });
 
 test('buildStoryPlan is deterministic against real engine-derived GameUnderstanding: two calls match byte-for-byte', async ({ page }) => {

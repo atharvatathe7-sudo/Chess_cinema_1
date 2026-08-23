@@ -204,6 +204,20 @@ export class StockfishAnalysisEngine implements AnalysisEngine {
     }
 
     const best = foldInfoLines(infoLines);
+
+    // A position with no legal moves (checkmate/stalemate) legitimately
+    // produces no bestmove: the engine reports `bestmove (none)`. Checkmate
+    // already reaches the terminal fallback correctly, because Stockfish
+    // reports it as `score mate 0`, and fromUciScore has its own dedicated
+    // handling for that exact sentinel. Stalemate does not: Stockfish
+    // reports a nominal, non-mate `score cp 0` alongside `bestmove (none)`,
+    // which is indistinguishable in shape from a genuine, ordinary balanced
+    // position — so the one reliable signal is the already-parsed bestmove
+    // itself, not the shape of the accompanying info line. This check is
+    // scoped to exactly the gap fromUciScore's mate-0 case doesn't cover.
+    if (outcome.bestMove === null && best?.score?.kind !== 'mate') {
+      return err(engineProtocolError(`no evaluation returned for position: ${fen}`));
+    }
     if (!best || best.score === undefined) {
       // A terminal position (checkmate/stalemate) legitimately produces no
       // score: the engine reports `bestmove (none)` and searches nothing.

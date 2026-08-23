@@ -6,6 +6,7 @@ import { createInitialState, type AppState } from '../state/AppState';
 import { Store } from '../state/store';
 import { goToNextMove, goToPreviousMove, loadPgn, restart, seekTo, setPlaying } from '../state/actions';
 import { cancelAnalysis, runAnalysis } from '../state/analysisActions';
+import { cancelDirection, runDirection } from '../state/directionActions';
 import type { AppError } from '../errors/AppError';
 import { StockfishAnalysisEngine } from '../analysis/StockfishAnalysisEngine';
 import { formatEvaluation, formatSwingCp } from '../analysis/evaluation';
@@ -86,6 +87,14 @@ export function mountPanel(root: HTMLElement): void {
       </div>
       <div id="analysis-status" style="text-align:center;font-size:13px;color:#555;font-variant-numeric:tabular-nums;"></div>
       <div id="analysis-candidates" style="font-size:13px;"></div>
+
+      <hr style="border:none;border-top:1px solid #ddd;margin:4px 0;" />
+
+      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:center;">
+        <button id="direct-btn" class="cc-btn" disabled>Generate Cinematic</button>
+        <button id="cancel-direction-btn" class="cc-btn" disabled>Cancel</button>
+      </div>
+      <div id="direction-status" style="text-align:center;font-size:13px;color:#555;font-variant-numeric:tabular-nums;"></div>
     </div>
   `;
 
@@ -105,6 +114,9 @@ export function mountPanel(root: HTMLElement): void {
   const cancelAnalysisBtn = root.querySelector<HTMLButtonElement>('#cancel-analysis-btn')!;
   const analysisStatus = root.querySelector<HTMLDivElement>('#analysis-status')!;
   const analysisCandidates = root.querySelector<HTMLDivElement>('#analysis-candidates')!;
+  const directBtn = root.querySelector<HTMLButtonElement>('#direct-btn')!;
+  const cancelDirectionBtn = root.querySelector<HTMLButtonElement>('#cancel-direction-btn')!;
+  const directionStatus = root.querySelector<HTMLDivElement>('#direction-status')!;
 
   const dpr = window.devicePixelRatio || 1;
   canvas.width = Math.round(boardCssSize * dpr);
@@ -192,6 +204,36 @@ export function mountPanel(root: HTMLElement): void {
     }
   }
 
+  /**
+   * Phase 2.5 — Generate Cinematic. Deliberately NOT included in
+   * setEnabled(loaded): direct-btn's enabled condition (a COMPLETED
+   * analysis, not merely a loaded game) is strictly narrower than every
+   * other button's, so it must be governed solely by this function's own
+   * reactive check against state.analysis.status — folding it into
+   * setEnabled's flat "loaded" boolean would incorrectly re-enable it
+   * immediately after every PGN load, before any analysis has run.
+   */
+  function renderDirection(state: AppState): void {
+    const { status, result, error } = state.direction;
+    const running = status === 'running';
+
+    directBtn.disabled = state.analysis.status !== 'complete' || running;
+    cancelDirectionBtn.disabled = !running;
+    directBtn.textContent = running ? 'Directing…' : 'Generate Cinematic';
+
+    if (running) {
+      directionStatus.textContent = 'Directing…';
+    } else if (status === 'error') {
+      directionStatus.textContent = formatAnalysisError(error);
+    } else if (status === 'complete' && result && state.game) {
+      const scene = state.game.timeline.scenes[0];
+      const seconds = scene ? (scene.durationMs / 1000).toFixed(1) : '?';
+      directionStatus.textContent = `Cinematic direction complete — timeline duration ${seconds}s.`;
+    } else {
+      directionStatus.textContent = '';
+    }
+  }
+
   function refreshUiFromState(): void {
     const state = store.getState();
     errorEl.textContent = state.ui.pendingError?.message ?? '';
@@ -213,6 +255,7 @@ export function mountPanel(root: HTMLElement): void {
     }
 
     renderAnalysis(state);
+    renderDirection(state);
   }
 
   store.subscribe(refreshUiFromState);
@@ -247,6 +290,24 @@ export function mountPanel(root: HTMLElement): void {
 
   cancelAnalysisBtn.addEventListener('click', () => {
     cancelAnalysis();
+  });
+
+  directBtn.addEventListener('click', () => {
+    setPlaying(store, false);
+    // A fresh engine per run, same reasoning as Analyze Game: a failed or
+    // cancelled run never leaves a half-dead worker behind for the next one.
+    const directionEngine = new StockfishAnalysisEngine();
+    void runDirection(store, directionEngine, new ChessJsEngine()).finally(() => {
+      directionEngine.dispose();
+      // A successful run replaced game.timeline — render immediately
+      // rather than waiting for the next PreviewLoop tick, matching every
+      // other discrete action's "instant feedback" convention.
+      renderNow();
+    });
+  });
+
+  cancelDirectionBtn.addEventListener('click', () => {
+    cancelDirection();
   });
 
   async function handleExport(): Promise<void> {

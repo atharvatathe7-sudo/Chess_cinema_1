@@ -2,6 +2,9 @@ import type { GameRecord } from '../pgn/types';
 import type { Timeline } from '../timeline/types';
 import type { AppError } from '../errors/AppError';
 import type { AnalysisProgress, GameAnalysis } from '../analysis/types';
+import type { GameUnderstanding } from '../understanding/types';
+import type { StoryPlan } from '../story/types';
+import type { CinematicPlan } from '../director/types';
 
 /**
  * A GameRecord and the Timeline generated from it always travel together
@@ -62,12 +65,38 @@ export interface AnalysisState {
   error: AppError | null;
 }
 
+/**
+ * Phase 2.5 — Cinematic Direction. Additive, like AnalysisState: it holds
+ * what the (GameUnderstanding -> StoryPlan -> CinematicPlan) pipeline
+ * produced, and nothing else. It never carries a clock or position of its
+ * own. Unlike analysis, a *successful* run's side effect reaches beyond
+ * this slice — it also atomically replaces game.timeline (state/
+ * directionActions.ts is the only place allowed to do that) — but the
+ * slice itself is still purely additive: renderer/preview/export never
+ * read it directly, only game.timeline.
+ */
+export type DirectionRunState = 'idle' | 'running' | 'complete' | 'error';
+
+export interface DirectionResult {
+  readonly understanding: GameUnderstanding;
+  readonly story: StoryPlan;
+  readonly cinematicPlan: CinematicPlan;
+}
+
+export interface DirectionState {
+  status: DirectionRunState;
+  /** The completed pipeline output, or null when no successful run exists for the loaded game. */
+  result: DirectionResult | null;
+  error: AppError | null;
+}
+
 export interface AppState {
   game: LoadedGame | null;
   playback: PlaybackState;
   ui: UiState;
   assets: AssetState;
   analysis: AnalysisState;
+  direction: DirectionState;
 }
 
 export function createInitialState(): AppState {
@@ -88,6 +117,11 @@ export function createInitialState(): AppState {
     analysis: {
       status: 'idle',
       progress: null,
+      result: null,
+      error: null
+    },
+    direction: {
+      status: 'idle',
       result: null,
       error: null
     }

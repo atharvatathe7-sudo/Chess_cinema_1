@@ -15,6 +15,8 @@ import { currentMoveNumber, totalMoveCount } from '../timeline/navigation';
 import { PreviewLoop, previewTick } from '../preview/PreviewLoop';
 import { runExport } from '../export/runExport';
 import { PngSequenceEncoder } from '../export/PngSequenceEncoder';
+import { Vp9VideoEncoder } from '../export/Vp9VideoEncoder';
+import { detectVp9VideoExportSupport } from '../export/capabilities';
 import type { RenderDims } from '../render/coords';
 import { mountTimelineControl } from './TimelineControl';
 
@@ -77,6 +79,7 @@ export function mountPanel(root: HTMLElement): void {
 
       <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:center;">
         <button id="export-btn" class="cc-btn" disabled>Export PNG sequence</button>
+        <button id="export-video-btn" class="cc-btn" disabled>Export Video</button>
         <span id="export-progress"></span>
       </div>
 
@@ -119,6 +122,7 @@ export function mountPanel(root: HTMLElement): void {
   const playBtn = root.querySelector<HTMLButtonElement>('#play-btn')!;
   const nextBtn = root.querySelector<HTMLButtonElement>('#next-btn')!;
   const exportBtn = root.querySelector<HTMLButtonElement>('#export-btn')!;
+  const exportVideoBtn = root.querySelector<HTMLButtonElement>('#export-video-btn')!;
   const exportProgress = root.querySelector<HTMLSpanElement>('#export-progress')!;
   const analyzeBtn = root.querySelector<HTMLButtonElement>('#analyze-btn')!;
   const cancelAnalysisBtn = root.querySelector<HTMLButtonElement>('#cancel-analysis-btn')!;
@@ -139,6 +143,18 @@ export function mountPanel(root: HTMLElement): void {
   const dims: RenderDims = { width: canvas.width, height: canvas.height };
 
   const previewLoop = new PreviewLoop(store, ctx, dims, assets);
+
+  // Detected once (async, since it genuinely requires asking the browser
+  // via VideoEncoder.isConfigSupported — see capabilities.ts). "Export
+  // Video" stays disabled until this resolves, and stays disabled with an
+  // explanatory title if it resolves unsupported — never silently fails
+  // and never lets a click through to an encoder that can't work.
+  let videoExportSupported = false;
+  void detectVp9VideoExportSupport(dims, EXPORT_FPS).then((support) => {
+    videoExportSupported = support.supported;
+    exportVideoBtn.title = support.supported ? '' : (support.reason ?? 'Video export is unavailable in this browser.');
+    setEnabled(!!store.getState().game);
+  });
 
   /** Renders immediately rather than waiting for the next rAF tick — used after
    * every discrete navigation action so scrubbing/stepping feels instant. Calls
@@ -167,6 +183,7 @@ export function mountPanel(root: HTMLElement): void {
     prevBtn.disabled = !loaded;
     nextBtn.disabled = !loaded;
     exportBtn.disabled = !loaded;
+    exportVideoBtn.disabled = !loaded || !videoExportSupported;
     analyzeBtn.disabled = !loaded;
   }
 
@@ -386,6 +403,10 @@ export function mountPanel(root: HTMLElement): void {
     void handleExport();
   });
 
+  exportVideoBtn.addEventListener('click', () => {
+    void handleExportVideo();
+  });
+
   analyzeBtn.addEventListener('click', () => {
     setPlaying(store, false);
     // A fresh engine per run keeps a failed or cancelled run from leaving a
@@ -433,6 +454,7 @@ export function mountPanel(root: HTMLElement): void {
     if (!state.game) return;
     setPlaying(store, false);
     exportBtn.disabled = true;
+    exportVideoBtn.disabled = true;
     exportProgress.textContent = 'Exporting… 0%';
 
     try {
@@ -451,6 +473,45 @@ export function mountPanel(root: HTMLElement): void {
       console.error('Export failed:', cause);
     } finally {
       exportBtn.disabled = false;
+      exportVideoBtn.disabled = !videoExportSupported;
+    }
+  }
+
+  /**
+   * Same runExport driver as handleExport, with a Vp9VideoEncoder instead
+   * of a PngSequenceEncoder — the frame-by-frame OffscreenCanvas rendering,
+   * deterministic timing, and one-frame-in-flight backpressure are all
+   * unchanged; only what happens to each already-rendered frame differs.
+   * A failure here (unsupported browser, encoder/mux failure) only ever
+   * updates this local UI state — it never touches the store, so it can't
+   * corrupt playback/analysis/direction state, and "Export PNG sequence"
+   * is untouched and still fully usable either way.
+   */
+  async function handleExportVideo(): Promise<void> {
+    const state = store.getState();
+    if (!state.game) return;
+    setPlaying(store, false);
+    exportBtn.disabled = true;
+    exportVideoBtn.disabled = true;
+    exportProgress.textContent = 'Exporting video… 0%';
+
+    try {
+      const encoder = new Vp9VideoEncoder();
+      const blob = await runExport(state, assets, encoder, {
+        fps: EXPORT_FPS,
+        dims,
+        onProgress: (done, total) => {
+          exportProgress.textContent = `Exporting video… ${Math.round((done / total) * 100)}%`;
+        }
+      });
+      if (blob) downloadBlob(blob, 'chess-cinema-export.webm');
+      exportProgress.textContent = 'Export complete.';
+    } catch (cause) {
+      exportProgress.textContent = 'Video export failed — see console for details.';
+      console.error('Video export failed:', cause);
+    } finally {
+      exportBtn.disabled = false;
+      exportVideoBtn.disabled = !videoExportSupported;
     }
   }
 

@@ -191,11 +191,19 @@ test('Evergreen: a central-conflict/archetype moment is navigable and Export sti
   // and no new navigation target — confirmed below). The exact Climax
   // reason text was captured from a fresh real-browser run against this
   // exact PGN before being hardcoded here, not guessed.
+  //
+  // Phase 4: the Climax text changed from "a fork led to a material gain."
+  // A live investigation found the selected fork (attacker f3) is a
+  // persistent leftover from Qxf3 two plies earlier — Nxe7's own material
+  // gain is fully explained by the forced Rxe7+ Nxe7 recapture and has no
+  // structural relationship to that fork, which is never converted for the
+  // rest of the game. mechanismInvolvesMovedPiece now correctly suppresses
+  // it (neither move square matches the motif's attacker/targets).
   await expect(momentButtons).toHaveCount(2);
   const secondaryNarratives = forcedTrapItem.locator('.moment-narratives li');
   await expect(secondaryNarratives).toHaveCount(2);
   await expect(secondaryNarratives.nth(0)).toHaveText('King Hunt: A forced sequence of checks drove the king across the board, ending in mate.');
-  await expect(secondaryNarratives.nth(1)).toHaveText('Climax: The decisive moment — a fork led to a material gain.');
+  await expect(secondaryNarratives.nth(1)).toHaveText('Climax: The decisive moment of the game, leading to a material gain.');
   // The primary button's accessible name is unaffected by the secondary list.
   await expect(forcedTrapButton).toHaveText('Forced Trap — Move 46');
 
@@ -271,6 +279,17 @@ test('Stalemate: the terminal Moment shows the exact stalemate reason, distinct 
   await expect(stalemateButton).toHaveCount(1);
   const stalemateItem = page.locator('#moments-list li', { hasText: 'Stalemate' });
   await expect(stalemateItem.locator('.moment-reason')).toHaveText('The game ended in a stalemate — a draw by no legal moves.');
+
+  // Phase 4: this game's Climax turning point (Black's 6...Kf7, escaping a
+  // mate threat) has resolution 'repelled' with a genuinely non-empty
+  // threatsRemoved (so the resolution phrase itself stays supported), but
+  // the selected mechanism (skewer, attacker d8) is structurally unrelated
+  // to Kf7 — neither move square matches the motif's attacker/targets.
+  // mechanismInvolvesMovedPiece now correctly suppresses the mechanism
+  // clause while leaving the resolution wording intact. Exact text captured
+  // from a fresh real-browser run against this exact PGN, not guessed.
+  const climaxItem = page.locator('#moments-list li', { hasText: 'Climax' });
+  await expect(climaxItem.locator('.moment-reason')).toHaveText('The decisive moment of the game, leading to the threat being repelled.');
 
   // Phase 2.9: every Moment in this game (Threat Refutation, Climax,
   // Stalemate) has exactly one narrative — none of them should ever gain

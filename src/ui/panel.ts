@@ -259,7 +259,8 @@ export function mountPanel(root: HTMLElement): void {
    */
   function momentsForState(state: AppState): readonly CinematicMoment[] {
     if (state.direction.status !== 'complete' || !state.direction.result || !state.analysis.result || !state.game) return [];
-    return deriveCinematicMoments(state.direction.result.cinematicPlan, state.game.timeline, state.analysis.result);
+    const { cinematicPlan, understanding, story } = state.direction.result;
+    return deriveCinematicMoments(cinematicPlan, state.game.timeline, state.analysis.result, understanding, story);
   }
 
   // Rebuilding momentsList's DOM is only actually needed when the derived
@@ -300,7 +301,10 @@ export function mountPanel(root: HTMLElement): void {
     momentsList.innerHTML = moments
       .map(
         (m, i) =>
-          `<li><button type="button" class="cc-btn moment-btn" data-index="${i}" style="width:100%;text-align:left;">${escapeHtml(m.label)} — Move ${m.toPly}</button></li>`
+          `<li>
+            <button type="button" class="cc-btn moment-btn" data-index="${i}" style="width:100%;text-align:left;">${escapeHtml(m.label)} — Move ${m.toPly}</button>
+            <div class="moment-reason" style="font-size:12px;color:#555;padding:2px 4px 4px;">${escapeHtml(m.reason)}</div>
+          </li>`
       )
       .join('');
 

@@ -220,28 +220,37 @@ function resolutionIsUnsupported(causeConsequence: CauseConsequenceRecord): bool
 }
 
 /**
- * pickMechanism (understanding/causeConsequence.ts) selects whichever
- * tactical motif happened to be first in board-scan order, with no check
- * that it actually explains the decisive outcome — see
- * immediateChange.motifsTriggered[0], which is guaranteed (by
+ * Phase 4 — pickMechanism (understanding/causeConsequence.ts) selects
+ * whichever tactical motif happened to be first in board-scan order, with
+ * no check that it actually explains the move that produced this turning
+ * point — see immediateChange.motifsTriggered[0], which is guaranteed (by
  * pickMechanism's own construction) to be the motif instance the mechanism
  * value was read from, when mechanism is a TacticalMotif at all.
  *
- * significanceEvidence alone is NOT used as an independent, unconditional
- * gate: a live investigation found it is false even for Evergreen's
- * genuinely-causal "fork led to a material gain" climax (Stage 2's
- * confirmMotifSignificance only fires on an immediate positive swing at
- * the triggering ply itself, which a fork's realized value often arrives
- * after, not on). Using it independently would silently rewrite Evergreen's
- * already-correct explanation. It is therefore only consulted as a second
- * confirming signal within the already-unsupported 'repelled' case above,
- * where every real example also lacks significance evidence.
+ * A live, ply-by-ply investigation of Evergreen's own climax (Nxe7, ply 40)
+ * found the selected fork (attacker f3, targets d3/d1) first appeared two
+ * plies earlier at Qxf3 and simply persisted geometrically untouched —
+ * Nxe7's own material gain is fully explained by a forced recapture
+ * (Rxe7+ Nxe7), and the fork is never converted for the rest of the game.
+ * significanceEvidence cannot distinguish this case: it is a same-ply,
+ * uniformly-applied swing check (Stage 2's confirmMotifSignificance), not a
+ * per-motif relevance check, and it was independently found to disagree
+ * with genuine causation in both directions across a wider real-game
+ * corpus (missing on every forced-mate mechanism; present on bystander
+ * motifs). It is therefore not consulted here at all.
+ *
+ * involvesMovedPiece is a structural, non-fuzzy substitute requiring no
+ * chess judgment: the selected motif is only presented as explanatory when
+ * its own geometry is anchored to the square(s) the move played this turn.
  */
-function mechanismHasSignificance(causeConsequence: CauseConsequenceRecord, understanding: GameUnderstanding): boolean {
+function mechanismInvolvesMovedPiece(causeConsequence: CauseConsequenceRecord, understanding: GameUnderstanding): boolean {
   const motifIds = causeConsequence.immediateChange.motifsTriggered;
-  if (motifIds.length === 0) return true; // not motif-sourced (king-safety/positional) — no significance concept applies
+  if (motifIds.length === 0) return true; // not motif-sourced (king-safety/positional) — no grounding concept applies
   const motif = understanding.motifs.find((m) => m.id === motifIds[0]);
-  return motif?.significanceEvidence !== undefined;
+  if (!motif) return true; // defense-in-depth; motifsTriggered is expected to always resolve
+  const from = causeConsequence.movePlayed.uci.slice(0, 2);
+  const to = causeConsequence.movePlayed.uci.slice(2, 4);
+  return motif.squares.attacker === from || motif.squares.attacker === to || motif.squares.targets.includes(to);
 }
 
 /**
@@ -264,7 +273,7 @@ function centralConflictReason(directive: AnnotationDirective, story: StoryPlan,
   const resolution = unsupported ? CONSERVATIVE_SWING_PHRASE : RESOLUTION_PHRASE[causeConsequence.resolution];
 
   const mechanism = causeConsequence.mechanism;
-  const omitMechanism = mechanism === null || (unsupported && !mechanismHasSignificance(causeConsequence, understanding));
+  const omitMechanism = mechanism === null || !mechanismInvolvesMovedPiece(causeConsequence, understanding);
   if (omitMechanism) return `The decisive moment of the game, leading to ${resolution}.`;
   return `The decisive moment — ${MECHANISM_PHRASE[mechanism]} led to ${resolution}.`;
 }

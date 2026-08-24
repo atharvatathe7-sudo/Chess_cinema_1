@@ -305,12 +305,21 @@ export function mountPanel(root: HTMLElement): void {
         // unchanged; any remaining distinct narratives render underneath
         // as a plain list, never inside the button (its accessible name
         // stays exactly the primary label, unchanged).
+        //
+        // Phase 2.9 — secondary narratives are wrapped with a fixed
+        // "Also true" label and visually subordinated (smaller/lighter
+        // text, left border) so they read as supporting context rather
+        // than a continuation of the primary reason. The "Also true"
+        // text is static UI chrome, never generated from narrative data.
         const secondary = m.narratives.slice(1);
         const secondaryHtml =
           secondary.length > 0
-            ? `<ul class="moment-narratives" style="list-style:none;padding:0;margin:2px 4px 4px;font-size:12px;color:#555;">${secondary
-                .map((n) => `<li>${escapeHtml(n.label)}: ${escapeHtml(n.reason)}</li>`)
-                .join('')}</ul>`
+            ? `<div class="moment-narratives-block" style="border-left:2px solid #ddd;padding-left:8px;margin:4px 4px 4px;">
+                <div class="moment-narratives-label" style="font-size:11px;color:#888;font-weight:600;">Also true</div>
+                <ul class="moment-narratives" style="list-style:none;padding:0;margin:2px 0 0;font-size:11px;color:#888;">${secondary
+                  .map((n) => `<li>${escapeHtml(n.label)}: ${escapeHtml(n.reason)}</li>`)
+                  .join('')}</ul>
+              </div>`
             : '';
         return `<li>
             <button type="button" class="cc-btn moment-btn" data-index="${i}" style="width:100%;text-align:left;">${escapeHtml(m.label)} — Move ${m.toPly}</button>

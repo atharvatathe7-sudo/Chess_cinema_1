@@ -202,6 +202,49 @@ function threatRefutationReason(directive: AnnotationDirective, understanding: G
 }
 
 /**
+ * Phase 3 — resolutionFor (understanding/causeConsequence.ts) assigns
+ * 'repelled' purely from a large negative evaluation swing for the mover
+ * (moverRelativeSwingAtConsequence <= -100); it never checks
+ * threatsRemoved. A live pipeline investigation found real games (Scholar's
+ * Mate, the pawn-promotion race) where this bucket is reached by an
+ * outright blunder that CREATED threats and removed none — "the threat
+ * being repelled" is actively contradicted by the record's own
+ * threatsRemoved in those cases. The defensive phrasing is only honest
+ * when threatsRemoved is actually non-empty (confirmed true for the one
+ * real 'repelled' case that does hold up: the Stalemate game's climax).
+ */
+const CONSERVATIVE_SWING_PHRASE = 'a decisive swing against the player who moved';
+
+function resolutionIsUnsupported(causeConsequence: CauseConsequenceRecord): boolean {
+  return causeConsequence.resolution === 'repelled' && causeConsequence.threatsRemoved.length === 0;
+}
+
+/**
+ * pickMechanism (understanding/causeConsequence.ts) selects whichever
+ * tactical motif happened to be first in board-scan order, with no check
+ * that it actually explains the decisive outcome — see
+ * immediateChange.motifsTriggered[0], which is guaranteed (by
+ * pickMechanism's own construction) to be the motif instance the mechanism
+ * value was read from, when mechanism is a TacticalMotif at all.
+ *
+ * significanceEvidence alone is NOT used as an independent, unconditional
+ * gate: a live investigation found it is false even for Evergreen's
+ * genuinely-causal "fork led to a material gain" climax (Stage 2's
+ * confirmMotifSignificance only fires on an immediate positive swing at
+ * the triggering ply itself, which a fork's realized value often arrives
+ * after, not on). Using it independently would silently rewrite Evergreen's
+ * already-correct explanation. It is therefore only consulted as a second
+ * confirming signal within the already-unsupported 'repelled' case above,
+ * where every real example also lacks significance evidence.
+ */
+function mechanismHasSignificance(causeConsequence: CauseConsequenceRecord, understanding: GameUnderstanding): boolean {
+  const motifIds = causeConsequence.immediateChange.motifsTriggered;
+  if (motifIds.length === 0) return true; // not motif-sourced (king-safety/positional) — no significance concept applies
+  const motif = understanding.motifs.find((m) => m.id === motifIds[0]);
+  return motif?.significanceEvidence !== undefined;
+}
+
+/**
  * central-conflict-highlight is only ever produced from the StoryPlan's
  * own climax beat, and story/beats.ts always populates a climax beat's
  * evidenceRefs.turningPointId — so this lookup is expected to resolve for
@@ -216,9 +259,13 @@ function centralConflictReason(directive: AnnotationDirective, story: StoryPlan,
   const turningPoint = turningPointId ? understanding.turningPoints.find((tp) => tp.id === turningPointId) : undefined;
   if (!turningPoint) return 'The decisive moment of the game.';
 
-  const resolution = RESOLUTION_PHRASE[turningPoint.causeConsequence.resolution];
-  const mechanism = turningPoint.causeConsequence.mechanism;
-  if (mechanism === null) return `The decisive moment of the game, leading to ${resolution}.`;
+  const causeConsequence = turningPoint.causeConsequence;
+  const unsupported = resolutionIsUnsupported(causeConsequence);
+  const resolution = unsupported ? CONSERVATIVE_SWING_PHRASE : RESOLUTION_PHRASE[causeConsequence.resolution];
+
+  const mechanism = causeConsequence.mechanism;
+  const omitMechanism = mechanism === null || (unsupported && !mechanismHasSignificance(causeConsequence, understanding));
+  if (omitMechanism) return `The decisive moment of the game, leading to ${resolution}.`;
   return `The decisive moment — ${MECHANISM_PHRASE[mechanism]} led to ${resolution}.`;
 }
 

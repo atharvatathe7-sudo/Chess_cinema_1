@@ -10,6 +10,8 @@ import {
   type CauseConsequenceRecord,
   type Evidence,
   type GameUnderstanding,
+  type TacticalMotif,
+  type TacticalMotifInstance,
   type ThreatRecord,
   type TurningPoint
 } from '../understanding/types';
@@ -123,12 +125,16 @@ function emptyEvidence(sourcePlies: readonly number[]): Evidence {
   return { basis: 'chess-rule', sourcePlies, note: '' };
 }
 
-/** A GameUnderstanding with only the fields Phase 2.7's reason-derivation actually reads populated; everything else is a valid, empty placeholder. */
-function understandingFixture(overrides: { threats?: readonly ThreatRecord[]; turningPoints?: readonly TurningPoint[] } = {}): GameUnderstanding {
+/** A GameUnderstanding with only the fields Phase 2.7/Phase 3's reason-derivation actually reads populated; everything else is a valid, empty placeholder. */
+function understandingFixture(overrides: {
+  threats?: readonly ThreatRecord[];
+  turningPoints?: readonly TurningPoint[];
+  motifs?: readonly TacticalMotifInstance[];
+} = {}): GameUnderstanding {
   return {
     schemaVersion: UNDERSTANDING_SCHEMA_VERSION,
     plies: [],
-    motifs: [],
+    motifs: overrides.motifs ?? [],
     threats: overrides.threats ?? [],
     sequences: [],
     turningPoints: overrides.turningPoints ?? [],
@@ -169,15 +175,32 @@ function threatRecord(kind: ThreatRecord['kind'], ply: number, refutedByPly: num
   };
 }
 
-function causeConsequence(mechanism: CauseConsequenceRecord['mechanism'], resolution: CauseConsequenceRecord['resolution'], ply: number): CauseConsequenceRecord {
+function motifInstance(id: string, ply: number, motif: TacticalMotif, significant: boolean): TacticalMotifInstance {
+  return {
+    id,
+    ply,
+    motif,
+    squares: { attacker: 'a1', targets: ['a2'] },
+    geometryEvidence: emptyEvidence([ply]),
+    ...(significant ? { significanceEvidence: emptyEvidence([ply]) } : {})
+  };
+}
+
+/** Phase 3 — threatsRemoved/motifsTriggered are overridable; both default to [] to match every pre-Phase-3 call site exactly. */
+function causeConsequence(
+  mechanism: CauseConsequenceRecord['mechanism'],
+  resolution: CauseConsequenceRecord['resolution'],
+  ply: number,
+  overrides: { threatsRemoved?: readonly string[]; motifsTriggered?: readonly string[] } = {}
+): CauseConsequenceRecord {
   return {
     id: `cc-${ply}`,
     ply,
     positionBefore: 'startpos',
     movePlayed: { san: 'm', uci: 'e2e4' },
-    immediateChange: { evaluationDelta: { swingCp: 0, swingForMoverCp: 0 }, materialDelta: 0, motifsTriggered: [] },
+    immediateChange: { evaluationDelta: { swingCp: 0, swingForMoverCp: 0 }, materialDelta: 0, motifsTriggered: overrides.motifsTriggered ?? [] },
     threatsCreated: [],
-    threatsRemoved: [],
+    threatsRemoved: overrides.threatsRemoved ?? [],
     mechanism,
     bestAlternative: {
       topMove: null,
@@ -195,13 +218,19 @@ function causeConsequence(mechanism: CauseConsequenceRecord['mechanism'], resolu
   };
 }
 
-function turningPoint(id: string, ply: number, mechanism: CauseConsequenceRecord['mechanism'], resolution: CauseConsequenceRecord['resolution']): TurningPoint {
+function turningPoint(
+  id: string,
+  ply: number,
+  mechanism: CauseConsequenceRecord['mechanism'],
+  resolution: CauseConsequenceRecord['resolution'],
+  overrides: { threatsRemoved?: readonly string[]; motifsTriggered?: readonly string[] } = {}
+): TurningPoint {
   return {
     id,
     ply,
     kind: 'decisive-swing',
     significance: { score: 1, reasons: [] },
-    causeConsequence: causeConsequence(mechanism, resolution, ply)
+    causeConsequence: causeConsequence(mechanism, resolution, ply, overrides)
   };
 }
 
@@ -403,7 +432,11 @@ describe('deriveCinematicMoments', () => {
       ['decisive-advantage', 'The decisive moment of the game, leading to a decisive advantage.'],
       ['material-gain', 'The decisive moment of the game, leading to a material gain.'],
       ['forced-mate', 'The decisive moment of the game, leading to a forced mate.'],
-      ['repelled', 'The decisive moment of the game, leading to the threat being repelled.'],
+      // Phase 3: this fixture never sets threatsRemoved (defaults to []),
+      // so 'repelled' is the unsupported case and uses the conservative
+      // phrase — see the dedicated 'Phase 3' describe block below for the
+      // threatsRemoved.length > 0 case, which keeps the defensive wording.
+      ['repelled', 'The decisive moment of the game, leading to a decisive swing against the player who moved.'],
       ['unresolved', 'The decisive moment of the game, leading to an unresolved position.'],
       ['drawn', 'The decisive moment of the game, leading to a draw.']
     ];
@@ -661,6 +694,111 @@ describe('deriveCinematicMoments', () => {
       expect(moment!.atMs).toBe(38 * 600);
       expect(moment!.untilMs).toBe(46 * 600);
       expect(moment!.targetTimeMs).toBe(46 * 600 - 1);
+    });
+  });
+
+  describe('Phase 3 — conservative wording when "repelled"/mechanism claims are unsupported', () => {
+    it('Scholar\'s-Mate-shaped: repelled with zero threats removed and an insignificant motif uses conservative, mechanism-free wording', () => {
+      // Reproduces the exact real Scholar's Mate shape confirmed via a live
+      // pipeline probe: mechanism 'pin', resolution 'repelled',
+      // threatsRemoved empty, and the selected motif has no
+      // significanceEvidence.
+      const timeline = timelineFromDurations([600, 600]);
+      const plan = cinematicPlan([directive('central-conflict-highlight', 2, 2, { kind: 'beat', id: 'beat-1' })]);
+      const understanding = understandingFixture({
+        turningPoints: [turningPoint('tp-1', 2, 'pin', 'repelled', { motifsTriggered: ['motif-1'] })],
+        motifs: [motifInstance('motif-1', 2, 'pin', false)]
+      });
+      const story = storyFixture({ beats: [climaxBeat('beat-1', 2, 'tp-1')] });
+      const [moment] = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, understanding, story);
+      expect(moment!.reason).toBe('The decisive moment of the game, leading to a decisive swing against the player who moved.');
+      expect(moment!.reason).not.toContain('repelled');
+      expect(moment!.reason).not.toContain('pin');
+    });
+
+    it('repelled with an actually removed threat and a significant mechanism keeps the existing defensive wording', () => {
+      const timeline = timelineFromDurations([600, 600]);
+      const plan = cinematicPlan([directive('central-conflict-highlight', 2, 2, { kind: 'beat', id: 'beat-1' })]);
+      const understanding = understandingFixture({
+        turningPoints: [turningPoint('tp-1', 2, 'skewer', 'repelled', { threatsRemoved: ['threat-1'], motifsTriggered: ['motif-1'] })],
+        motifs: [motifInstance('motif-1', 2, 'skewer', true)]
+      });
+      const story = storyFixture({ beats: [climaxBeat('beat-1', 2, 'tp-1')] });
+      const [moment] = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, understanding, story);
+      expect(moment!.reason).toBe('The decisive moment — a skewer led to the threat being repelled.');
+    });
+
+    it('repelled + zero threats removed + insignificant motif: the mechanism clause is omitted', () => {
+      const timeline = timelineFromDurations([600, 600]);
+      const plan = cinematicPlan([directive('central-conflict-highlight', 2, 2, { kind: 'beat', id: 'beat-1' })]);
+      const understanding = understandingFixture({
+        turningPoints: [turningPoint('tp-1', 2, 'discovery', 'repelled', { motifsTriggered: ['motif-1'] })],
+        motifs: [motifInstance('motif-1', 2, 'discovery', false)]
+      });
+      const story = storyFixture({ beats: [climaxBeat('beat-1', 2, 'tp-1')] });
+      const [moment] = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, understanding, story);
+      expect(moment!.reason).not.toContain('discovered attack');
+      expect(moment!.reason).toBe('The decisive moment of the game, leading to a decisive swing against the player who moved.');
+    });
+
+    it('repelled + zero threats removed + a significant motif: the mechanism clause remains, paired with the conservative resolution phrase', () => {
+      const timeline = timelineFromDurations([600, 600]);
+      const plan = cinematicPlan([directive('central-conflict-highlight', 2, 2, { kind: 'beat', id: 'beat-1' })]);
+      const understanding = understandingFixture({
+        turningPoints: [turningPoint('tp-1', 2, 'battery', 'repelled', { motifsTriggered: ['motif-1'] })],
+        motifs: [motifInstance('motif-1', 2, 'battery', true)]
+      });
+      const story = storyFixture({ beats: [climaxBeat('beat-1', 2, 'tp-1')] });
+      const [moment] = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, understanding, story);
+      expect(moment!.reason).toBe('The decisive moment — a battery led to a decisive swing against the player who moved.');
+      expect(moment!.reason).not.toContain('repelled');
+    });
+
+    it('Evergreen-shaped: material-gain with an insignificant mechanism keeps the exact existing wording unchanged', () => {
+      // Reproduces the real Evergreen shape confirmed live: mechanism
+      // 'fork', resolution 'material-gain', and the selected motif ALSO has
+      // no significanceEvidence — the significance check must not apply
+      // outside the unsupported-'repelled' case, or this exact real
+      // sentence would be silently rewritten.
+      const timeline = timelineFromDurations([600, 600]);
+      const plan = cinematicPlan([directive('central-conflict-highlight', 2, 2, { kind: 'beat', id: 'beat-1' })]);
+      const understanding = understandingFixture({
+        turningPoints: [turningPoint('tp-1', 2, 'fork', 'material-gain', { motifsTriggered: ['motif-1'] })],
+        motifs: [motifInstance('motif-1', 2, 'fork', false)]
+      });
+      const story = storyFixture({ beats: [climaxBeat('beat-1', 2, 'tp-1')] });
+      const [moment] = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, understanding, story);
+      expect(moment!.reason).toBe('The decisive moment — a fork led to a material gain.');
+    });
+
+    it('Stalemate-shaped: repelled with one threat removed and an insignificant motif keeps the existing wording unchanged', () => {
+      // Reproduces the real Stalemate shape confirmed live: mechanism
+      // 'skewer', resolution 'repelled', exactly one threat removed, and
+      // the selected motif has no significanceEvidence — threatsRemoved
+      // being non-empty alone is enough to keep the defensive phrasing.
+      const timeline = timelineFromDurations([600, 600]);
+      const plan = cinematicPlan([directive('central-conflict-highlight', 2, 2, { kind: 'beat', id: 'beat-1' })]);
+      const understanding = understandingFixture({
+        turningPoints: [turningPoint('tp-1', 2, 'skewer', 'repelled', { threatsRemoved: ['threat-1'], motifsTriggered: ['motif-1'] })],
+        motifs: [motifInstance('motif-1', 2, 'skewer', false)]
+      });
+      const story = storyFixture({ beats: [climaxBeat('beat-1', 2, 'tp-1')] });
+      const [moment] = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, understanding, story);
+      expect(moment!.reason).toBe('The decisive moment — a skewer led to the threat being repelled.');
+    });
+
+    it('reason derivation remains deterministic across repeated calls for the conservative-wording path', () => {
+      const timeline = timelineFromDurations([600, 600]);
+      const plan = cinematicPlan([directive('central-conflict-highlight', 2, 2, { kind: 'beat', id: 'beat-1' })]);
+      const understanding = understandingFixture({
+        turningPoints: [turningPoint('tp-1', 2, 'pin', 'repelled', { motifsTriggered: ['motif-1'] })],
+        motifs: [motifInstance('motif-1', 2, 'pin', false)]
+      });
+      const story = storyFixture({ beats: [climaxBeat('beat-1', 2, 'tp-1')] });
+      const first = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, understanding, story);
+      const second = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, understanding, story);
+      expect(first[0]!.reason).toBe(second[0]!.reason);
+      expect(first[0]!.reason).toBe('The decisive moment of the game, leading to a decisive swing against the player who moved.');
     });
   });
 });

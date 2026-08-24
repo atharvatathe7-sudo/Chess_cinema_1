@@ -76,6 +76,16 @@ test('Scholar\'s Mate: Next Move overshoot still hides the terminal highlight, b
   const checkmateItem = page.locator('#moments-list li', { hasText: 'Checkmate' });
   await expect(checkmateItem.locator('.moment-reason')).toHaveText('The game ended in checkmate.');
 
+  // Phase 3: this game's Climax turning point (Black's 3...Nf6) is a real
+  // case of an unsupported 'repelled' claim — the live pipeline shows
+  // mechanism 'pin' with zero threatsRemoved and an insignificant motif,
+  // so the reason must no longer claim a pin "led to the threat being
+  // repelled" (a defensive claim the record actively contradicts: this
+  // move created 4 threats and removed none). Exact text captured from a
+  // fresh real-browser run against this exact PGN, not guessed.
+  const climaxItem = page.locator('#moments-list li', { hasText: 'Climax' });
+  await expect(climaxItem.locator('.moment-reason')).toHaveText('The decisive moment of the game, leading to a decisive swing against the player who moved.');
+
   // 1. Reproduce the OLD bug with ordinary Next Move, unchanged: Restart,
   // then step past the last move so nextBeatBoundaryMs's fallback lands
   // exactly on scene.durationMs.

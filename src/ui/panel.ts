@@ -7,6 +7,7 @@ import { Store } from '../state/store';
 import { goToNextMove, goToPreviousMove, loadPgn, restart, seekTo, setPlaying } from '../state/actions';
 import { cancelAnalysis, runAnalysis } from '../state/analysisActions';
 import { cancelDirection, runDirection } from '../state/directionActions';
+import { deriveCinematicMoments, goToNextMoment, goToPreviousMoment, type CinematicMoment } from '../state/moments';
 import type { AppError } from '../errors/AppError';
 import { StockfishAnalysisEngine } from '../analysis/StockfishAnalysisEngine';
 import { formatEvaluation, formatSwingCp } from '../analysis/evaluation';
@@ -95,6 +96,15 @@ export function mountPanel(root: HTMLElement): void {
         <button id="cancel-direction-btn" class="cc-btn" disabled>Cancel</button>
       </div>
       <div id="direction-status" style="text-align:center;font-size:13px;color:#555;font-variant-numeric:tabular-nums;"></div>
+
+      <div id="moments-section" style="display:none;">
+        <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:center;">
+          <button id="prev-moment-btn" class="cc-btn" disabled>◀ Prev Moment</button>
+          <button id="next-moment-btn" class="cc-btn" disabled>Next Moment ▶</button>
+        </div>
+        <div style="font-weight:600;margin:6px 0 2px;">Moments</div>
+        <ul id="moments-list" style="list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:4px;"></ul>
+      </div>
     </div>
   `;
 
@@ -117,6 +127,10 @@ export function mountPanel(root: HTMLElement): void {
   const directBtn = root.querySelector<HTMLButtonElement>('#direct-btn')!;
   const cancelDirectionBtn = root.querySelector<HTMLButtonElement>('#cancel-direction-btn')!;
   const directionStatus = root.querySelector<HTMLDivElement>('#direction-status')!;
+  const momentsSection = root.querySelector<HTMLDivElement>('#moments-section')!;
+  const prevMomentBtn = root.querySelector<HTMLButtonElement>('#prev-moment-btn')!;
+  const nextMomentBtn = root.querySelector<HTMLButtonElement>('#next-moment-btn')!;
+  const momentsList = root.querySelector<HTMLUListElement>('#moments-list')!;
 
   const dpr = window.devicePixelRatio || 1;
   canvas.width = Math.round(boardCssSize * dpr);
@@ -234,6 +248,74 @@ export function mountPanel(root: HTMLElement): void {
     }
   }
 
+  /**
+   * Phase 2.6 — Cinematic Moments. Purely derived from state already
+   * present (direction.result + game.timeline + analysis.result), exactly
+   * like renderAnalysis/renderDirection's own text is recomputed on every
+   * render rather than cached — no new AppState field, no second copy of
+   * CinematicPlan. Empty whenever Direction hasn't completed, or once a
+   * new PGN resets direction back to idle, since momentsSection's own
+   * display is gated on state.direction.status here.
+   */
+  function momentsForState(state: AppState): readonly CinematicMoment[] {
+    if (state.direction.status !== 'complete' || !state.direction.result || !state.analysis.result || !state.game) return [];
+    return deriveCinematicMoments(state.direction.result.cinematicPlan, state.game.timeline, state.analysis.result);
+  }
+
+  // Rebuilding momentsList's DOM is only actually needed when the derived
+  // moments themselves change (Direction completes, or a new PGN resets
+  // it) — not on every store notification. PreviewLoop's rAF loop calls
+  // advancePlayback() every frame regardless of whether playback is
+  // running (state/actions.ts), and Store.setState always notifies its
+  // subscribers even when the updater returns the same state back
+  // unchanged, so refreshUiFromState — and therefore renderMoments — runs
+  // continuously at animation-frame rate for as long as the app is open.
+  // Without this guard, moments-list's buttons (and their click listeners)
+  // would be torn down and recreated dozens of times per second, which is
+  // wasted work and, worse, makes the very button a user is trying to
+  // click liable to be mid-replacement at the moment of the click.
+  let lastMomentsSignature: string | null = null;
+
+  function renderMoments(state: AppState): void {
+    const canShow = state.direction.status === 'complete';
+    momentsSection.style.display = canShow ? '' : 'none';
+    if (!canShow) {
+      lastMomentsSignature = null;
+      return;
+    }
+
+    const moments = momentsForState(state);
+    prevMomentBtn.disabled = moments.length === 0;
+    nextMomentBtn.disabled = moments.length === 0;
+
+    const signature = moments.map((m) => m.id).join('|');
+    if (signature === lastMomentsSignature) return;
+    lastMomentsSignature = signature;
+
+    if (moments.length === 0) {
+      momentsList.innerHTML = '<li style="color:#555;">No key moments detected.</li>';
+      return;
+    }
+
+    momentsList.innerHTML = moments
+      .map(
+        (m, i) =>
+          `<li><button type="button" class="cc-btn moment-btn" data-index="${i}" style="width:100%;text-align:left;">${escapeHtml(m.label)} — Move ${m.toPly}</button></li>`
+      )
+      .join('');
+
+    momentsList.querySelectorAll<HTMLButtonElement>('.moment-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const index = Number(btn.dataset.index);
+        const target = momentsForState(store.getState())[index];
+        if (!target) return;
+        setPlaying(store, false);
+        seekTo(store, target.targetTimeMs);
+        renderNow();
+      });
+    });
+  }
+
   function refreshUiFromState(): void {
     const state = store.getState();
     errorEl.textContent = state.ui.pendingError?.message ?? '';
@@ -256,6 +338,7 @@ export function mountPanel(root: HTMLElement): void {
 
     renderAnalysis(state);
     renderDirection(state);
+    renderMoments(state);
   }
 
   store.subscribe(refreshUiFromState);
@@ -308,6 +391,16 @@ export function mountPanel(root: HTMLElement): void {
 
   cancelDirectionBtn.addEventListener('click', () => {
     cancelDirection();
+  });
+
+  prevMomentBtn.addEventListener('click', () => {
+    goToPreviousMoment(store, momentsForState(store.getState()));
+    renderNow();
+  });
+
+  nextMomentBtn.addEventListener('click', () => {
+    goToNextMoment(store, momentsForState(store.getState()));
+    renderNow();
   });
 
   async function handleExport(): Promise<void> {

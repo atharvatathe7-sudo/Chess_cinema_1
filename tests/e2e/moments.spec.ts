@@ -18,6 +18,7 @@ test.describe.configure({ timeout: 180_000 });
 const SCHOLARS_MATE = '1. e4 e5 2. Bc4 Bc5 3. Qh5 Nf6 4. Qxf7#';
 const EVERGREEN =
   '1. e4 e5 2. Nf3 Nc6 3. Bc4 Bc5 4. b4 Bxb4 5. c3 Ba5 6. d4 exd4 7. O-O d3 8. Qb3 Qf6 9. e5 Qg6 10. Re1 Nge7 11. Ba3 b5 12. Qxb5 Rb8 13. Qa4 Bb6 14. Nbd2 Bb7 15. Ne4 Qf5 16. Bxd3 Qh5 17. Nf6+ gxf6 18. exf6 Rg8 19. Rad1 Qxf3 20. Rxe7+ Nxe7 21. Qxd7+ Kxd7 22. Bf5+ Ke8 23. Bd7+ Kf8 24. Bxe7#';
+const STALEMATE = '1. e3 a5 2. Qh5 Ra6 3. Qxa5 h5 4. Qxc7 Rah6 5. h4 f6 6. Qxd7+ Kf7 7. Qxb7 Qd3 8. Qxb8 Qh7 9. Qxc8 Kg6 10. Qe6';
 
 async function loadAnalyzeDirect(page: import('@playwright/test').Page, pgn: string): Promise<void> {
   await page.goto('/');
@@ -66,6 +67,13 @@ test('Scholar\'s Mate: Next Move overshoot still hides the terminal highlight, b
   const checkmateButton = page.locator('#moments-list button.moment-btn', { hasText: 'Checkmate' });
   await expect(checkmateButton).toHaveCount(1);
   await expect(checkmateButton).toContainText('Move 7');
+
+  // Phase 2.7: every moment shows a non-empty, factual reason, and the
+  // checkmate moment specifically shows the exact checkmate reason.
+  const listItems = page.locator('#moments-list li');
+  await expect(listItems.first().locator('.moment-reason')).not.toBeEmpty();
+  const checkmateItem = page.locator('#moments-list li', { hasText: 'Checkmate' });
+  await expect(checkmateItem.locator('.moment-reason')).toHaveText('The game ended in checkmate.');
 
   // 1. Reproduce the OLD bug with ordinary Next Move, unchanged: Restart,
   // then step past the last move so nextBeatBoundaryMs's fallback lands
@@ -148,8 +156,20 @@ test('Evergreen: a central-conflict/archetype moment is navigable and Export sti
   const momentButtons = page.locator('#moments-list button.moment-btn');
   const count = await momentButtons.count();
   expect(count).toBeGreaterThan(0);
-  // At least one moment concerns the king hunt this game is known to produce (Phase 2.3.1/2.4 fixtures).
-  await expect(page.locator('#moments-list')).toContainText(/Climax|King Hunt|Checkmate/);
+
+  // Tightened (Phase 2.7): the previous /Climax|King Hunt|Checkmate/ regex
+  // was satisfiable by the terminal Checkmate entry alone, so it never
+  // actually proved a non-terminal central-conflict/archetype moment was
+  // present. This game's real, source-verified output (confirmed this
+  // session via a fresh real-browser run, not assumed) is exactly two
+  // moments: "Forced Trap — Move 46" (a genuine archetype-track moment,
+  // unrelated to the terminal highlight) and "Checkmate — Move 47". This
+  // asserts the specific non-terminal one by exact text, with its reason.
+  const forcedTrapButton = page.locator('#moments-list button.moment-btn', { hasText: 'Forced Trap' });
+  await expect(forcedTrapButton).toHaveCount(1);
+  await expect(forcedTrapButton).toContainText('Move 46');
+  const forcedTrapItem = page.locator('#moments-list li', { hasText: 'Forced Trap' });
+  await expect(forcedTrapItem.locator('.moment-reason')).toHaveText('A sacrifice forced a decisive sequence.');
 
   await page.click('#restart-btn');
   await page.waitForTimeout(30);
@@ -170,6 +190,30 @@ test('Evergreen: a central-conflict/archetype moment is navigable and Export sti
   const [download] = await Promise.all([page.waitForEvent('download', { timeout: 60_000 }), page.click('#export-btn')]);
   expect(download.suggestedFilename()).toBe('chess-cinema-export.zip');
   await expect(page.locator('#export-progress')).toHaveText('Export complete.');
+});
+
+test('Stalemate: the terminal Moment shows the exact stalemate reason, distinct from checkmate', async ({ page }) => {
+  await loadAnalyzeDirect(page, STALEMATE);
+
+  await expect(page.locator('#moments-section')).toBeVisible();
+  const stalemateButton = page.locator('#moments-list button.moment-btn', { hasText: 'Stalemate' });
+  await expect(stalemateButton).toHaveCount(1);
+  const stalemateItem = page.locator('#moments-list li', { hasText: 'Stalemate' });
+  await expect(stalemateItem.locator('.moment-reason')).toHaveText('The game ended in a stalemate — a draw by no legal moves.');
+
+  // Clicking it navigates correctly and the annotation is visibly rendered
+  // (non-blank canvas — the pixel-level proof this differs from ordinary
+  // Next Move overshoot is already covered by the Scholar's Mate test
+  // above; this test's own job is the reason text, not re-proving that).
+  await stalemateButton.click();
+  await page.waitForTimeout(30);
+  const nonBlank = await page.evaluate(() => {
+    const canvas = document.querySelector('#board') as HTMLCanvasElement;
+    const ctx = canvas.getContext('2d')!;
+    const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+    return Array.from(data).some((v, i) => i % 4 !== 3 && v !== 255);
+  });
+  expect(nonBlank).toBe(true);
 });
 
 test('Moments UI is hidden before Direction completes and resets after loading a new PGN', async ({ page }) => {

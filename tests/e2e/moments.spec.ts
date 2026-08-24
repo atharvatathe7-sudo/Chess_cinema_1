@@ -19,6 +19,7 @@ const SCHOLARS_MATE = '1. e4 e5 2. Bc4 Bc5 3. Qh5 Nf6 4. Qxf7#';
 const EVERGREEN =
   '1. e4 e5 2. Nf3 Nc6 3. Bc4 Bc5 4. b4 Bxb4 5. c3 Ba5 6. d4 exd4 7. O-O d3 8. Qb3 Qf6 9. e5 Qg6 10. Re1 Nge7 11. Ba3 b5 12. Qxb5 Rb8 13. Qa4 Bb6 14. Nbd2 Bb7 15. Ne4 Qf5 16. Bxd3 Qh5 17. Nf6+ gxf6 18. exf6 Rg8 19. Rad1 Qxf3 20. Rxe7+ Nxe7 21. Qxd7+ Kxd7 22. Bf5+ Ke8 23. Bd7+ Kf8 24. Bxe7#';
 const STALEMATE = '1. e3 a5 2. Qh5 Ra6 3. Qxa5 h5 4. Qxc7 Rah6 5. h4 f6 6. Qxd7+ Kf7 7. Qxb7 Qd3 8. Qxb8 Qh7 9. Qxc8 Kg6 10. Qe6';
+const PROMOTION_RACE = '1. a4 h5 2. a5 h4 3. a6 h3 4. axb7 hxg2 5. bxa8=Q gxh1=Q';
 
 async function loadAnalyzeDirect(page: import('@playwright/test').Page, pgn: string): Promise<void> {
   await page.goto('/');
@@ -187,10 +188,19 @@ test('Evergreen: a central-conflict/archetype moment is navigable and Export sti
   await expect(secondaryNarratives.nth(1)).toHaveText('Climax: The decisive moment — a fork led to a material gain.');
   // The primary button's accessible name is unaffected by the secondary list.
   await expect(forcedTrapButton).toHaveText('Forced Trap — Move 46');
+
+  // Phase 2.9: the same secondary narratives are now introduced by a fixed
+  // "Also true" label, visually subordinating them to the primary reason.
+  // The primary .moment-reason markup/text is unchanged (asserted above).
+  await expect(forcedTrapItem.locator('.moment-narratives-label')).toHaveText('Also true');
+
   // A Moment with only one narrative (the terminal Checkmate) renders no
-  // secondary list at all — the UI stays exactly as compact as Phase 2.7.
+  // secondary list — or "Also true" label — at all — the UI stays exactly
+  // as compact as Phase 2.7.
   const checkmateItem = page.locator('#moments-list li', { hasText: 'Checkmate' });
   await expect(checkmateItem.locator('.moment-narratives')).toHaveCount(0);
+  await expect(checkmateItem.locator('.moment-narratives-label')).toHaveCount(0);
+  await expect(checkmateItem).not.toContainText('Also true');
 
   await page.click('#restart-btn');
   await page.waitForTimeout(30);
@@ -213,6 +223,36 @@ test('Evergreen: a central-conflict/archetype moment is navigable and Export sti
   await expect(page.locator('#export-progress')).toHaveText('Export complete.');
 });
 
+test('Promotion race: a second independent multi-narrative Moment also shows the "Also true" hierarchy', async ({ page }) => {
+  await loadAnalyzeDirect(page, PROMOTION_RACE);
+
+  await expect(page.locator('#moments-section')).toBeVisible();
+  // This game has no terminal result — exactly one navigable Moment, whose
+  // three overlapping directives (pawn-journey archetype-track, the climax
+  // central-conflict-highlight, and a threat-refutation-arrow) were
+  // independently discovered during the Phase 2.8 audit to also exercise
+  // the multi-narrative merge, distinct from the canonical Evergreen case.
+  const momentButtons = page.locator('#moments-list button.moment-btn');
+  await expect(momentButtons).toHaveCount(1);
+  const pawnJourneyButton = page.locator('#moments-list button.moment-btn', { hasText: 'Pawn Journey' });
+  await expect(pawnJourneyButton).toHaveText('Pawn Journey — Move 10');
+
+  const pawnJourneyItem = page.locator('#moments-list li', { hasText: 'Pawn Journey' });
+  await expect(pawnJourneyItem.locator('.moment-reason')).toHaveText('A pawn advanced across the board before promoting.');
+
+  // "Also true" and the secondary narratives — exact text captured from a
+  // fresh real-browser run against this exact PGN before being hardcoded,
+  // not guessed.
+  await expect(pawnJourneyItem.locator('.moment-narratives-label')).toHaveText('Also true');
+  const secondaryNarratives = pawnJourneyItem.locator('.moment-narratives li');
+  await expect(secondaryNarratives).toHaveCount(2);
+  await expect(secondaryNarratives.nth(0)).toHaveText('Climax: The decisive moment — a fork led to the threat being repelled.');
+  await expect(secondaryNarratives.nth(1)).toHaveText('Threat Refutation: A threat to win material was refuted here.');
+
+  // The primary button's accessible name is unaffected by the secondary list.
+  await expect(pawnJourneyButton).toHaveText('Pawn Journey — Move 10');
+});
+
 test('Stalemate: the terminal Moment shows the exact stalemate reason, distinct from checkmate', async ({ page }) => {
   await loadAnalyzeDirect(page, STALEMATE);
 
@@ -221,6 +261,13 @@ test('Stalemate: the terminal Moment shows the exact stalemate reason, distinct 
   await expect(stalemateButton).toHaveCount(1);
   const stalemateItem = page.locator('#moments-list li', { hasText: 'Stalemate' });
   await expect(stalemateItem.locator('.moment-reason')).toHaveText('The game ended in a stalemate — a draw by no legal moves.');
+
+  // Phase 2.9: every Moment in this game (Threat Refutation, Climax,
+  // Stalemate) has exactly one narrative — none of them should ever gain
+  // the "Also true" hierarchy label or a secondary-narratives block.
+  await expect(page.locator('#moments-list')).not.toContainText('Also true');
+  await expect(page.locator('#moments-list .moment-narratives-label')).toHaveCount(0);
+  await expect(page.locator('#moments-list .moment-narratives')).toHaveCount(0);
 
   // Clicking it navigates correctly and the annotation is visibly rendered
   // (non-blank canvas — the pixel-level proof this differs from ordinary

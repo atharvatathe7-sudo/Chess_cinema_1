@@ -288,9 +288,14 @@ describe('deriveCinematicMoments', () => {
     expect(moments[0]!.kind).toBe('archetype-track');
     expect(moments[0]!.label).toBe('King Hunt');
     expect(moments[0]!.reason).toBe('A forced sequence of checks drove the king across the board, ending in mate.');
+    // Phase 2.8: the lower-priority Climax narrative is no longer discarded.
+    expect(moments[0]!.narratives).toEqual([
+      { label: 'King Hunt', reason: 'A forced sequence of checks drove the king across the board, ending in mate.' },
+      { label: 'Climax', reason: 'The decisive moment of the game.' }
+    ]);
   });
 
-  it('G: non-overlapping directives remain separate (unchanged by Phase 2.7)', () => {
+  it('G: non-overlapping directives remain separate (unchanged by Phase 2.7), each with exactly one narrative (Phase 2.8)', () => {
     const timeline = timelineFromDurations([600, 600, 600, 600, 600]);
     const plan = cinematicPlan([directive('threat-refutation-arrow', 1, 1), directive('archetype-track', 4, 5, { kind: 'archetypeSignal', archetype: 'pawn-journey' })]);
     const moments = deriveCinematicMoments(plan, timeline, analysisEndingWith(5, { kind: 'cp', cp: 0 }), EMPTY_UNDERSTANDING, EMPTY_STORY);
@@ -299,9 +304,13 @@ describe('deriveCinematicMoments', () => {
       [1, 1],
       [4, 5]
     ]);
+    for (const m of moments) {
+      expect(m.narratives).toHaveLength(1);
+      expect(m.narratives[0]).toEqual({ label: m.label, reason: m.reason });
+    }
   });
 
-  it('H: KIND_ORDER priority is respected for the merged label (terminal-result-highlight wins over central-conflict-highlight)', () => {
+  it('H: KIND_ORDER priority is respected for the merged label (terminal-result-highlight wins over central-conflict-highlight), and the lower-priority Climax narrative is preserved as narratives[1] (Phase 2.8)', () => {
     const timeline = timelineFromDurations([600, 600]);
     const plan = cinematicPlan([directive('central-conflict-highlight', 1, 2), directive('terminal-result-highlight', 2, 2, { kind: 'terminal' })]);
     const analysis = analysisEndingWith(2, { kind: 'terminal', result: 'white-wins' });
@@ -310,6 +319,10 @@ describe('deriveCinematicMoments', () => {
     expect(moments[0]!.kind).toBe('terminal-result-highlight');
     expect(moments[0]!.label).toBe('Checkmate');
     expect(moments[0]!.reason).toBe('The game ended in checkmate.');
+    expect(moments[0]!.narratives).toEqual([
+      { label: 'Checkmate', reason: 'The game ended in checkmate.' },
+      { label: 'Climax', reason: 'The decisive moment of the game.' }
+    ]);
   });
 
   it('I: no moment-worthy directives produces an empty array', () => {
@@ -491,6 +504,163 @@ describe('deriveCinematicMoments', () => {
         untilMs: 1200,
         targetTimeMs: 1199
       });
+      expect(moment!.narratives[0]).toEqual({ label: moment!.label, reason: moment!.reason });
+    });
+  });
+
+  describe('Phase 2.8 — narrative preservation', () => {
+    it('Evergreen: forced-trap + king-hunt + central-conflict-highlight overlap preserves all three narratives, in priority order', () => {
+      // Reproduces the exact real Evergreen overlap shape confirmed via a
+      // live pipeline probe during the Phase 2.8 audit/investigation:
+      // archetype-track(forced-trap)[39,40], archetype-track(king-hunt)[39,46],
+      // central-conflict-highlight[40,40] (evidenceRef: beat beat-climax-40).
+      const timeline = timelineFromDurations(Array(46).fill(600));
+      const plan = cinematicPlan([
+        directive('archetype-track', 39, 40, { kind: 'archetypeSignal', archetype: 'forced-trap' }),
+        directive('archetype-track', 39, 46, { kind: 'archetypeSignal', archetype: 'king-hunt' }),
+        directive('central-conflict-highlight', 40, 40, { kind: 'beat', id: 'beat-climax-40' })
+      ]);
+      const understanding = understandingFixture({ turningPoints: [turningPoint('tp-1', 40, 'fork', 'forced-mate')] });
+      const story = storyFixture({ beats: [climaxBeat('beat-climax-40', 40, 'tp-1')] });
+      const analysis = analysisEndingWith(46, { kind: 'cp', cp: 0 });
+
+      const moments = deriveCinematicMoments(plan, timeline, analysis, understanding, story);
+      expect(moments).toHaveLength(1);
+      const moment = moments[0]!;
+      expect(moment.fromPly).toBe(39);
+      expect(moment.toPly).toBe(46);
+
+      // Primary fields: unchanged from the pre-Phase-2.8 single-winner selection
+      // (archetype-track outranks central-conflict-highlight; forced-trap
+      // precedes king-hunt via ARCHETYPE_COLOR_ORDER).
+      expect(moment.kind).toBe('archetype-track');
+      expect(moment.label).toBe('Forced Trap');
+      expect(moment.reason).toBe('A sacrifice forced a decisive sequence.');
+
+      // Phase 2.8: no genuine narrative is discarded, in the exact expected order.
+      expect(moment.narratives).toEqual([
+        { label: 'Forced Trap', reason: 'A sacrifice forced a decisive sequence.' },
+        { label: 'King Hunt', reason: 'A forced sequence of checks drove the king across the board, ending in mate.' },
+        { label: 'Climax', reason: 'The decisive moment — a fork led to a forced mate.' }
+      ]);
+      expect(moment.narratives[0]).toEqual({ label: moment.label, reason: moment.reason });
+    });
+
+    it('archetype (stalemate-swindle) + terminal-result-highlight sharing the exact same single ply preserves both narratives, terminal primary', () => {
+      // stalemateSwindleSignals (src/story/archetypes.ts) sets plies to
+      // exactly [finalPly.ply] — identical to terminal-result-highlight's
+      // own [finalPly, finalPly] range, so this is a real, not synthetic,
+      // identical-range overlap.
+      const timeline = timelineFromDurations([600, 600, 600]);
+      const plan = cinematicPlan([
+        directive('archetype-track', 3, 3, { kind: 'archetypeSignal', archetype: 'stalemate-swindle' }),
+        directive('terminal-result-highlight', 3, 3, { kind: 'terminal' })
+      ]);
+      const analysis = analysisEndingWith(3, { kind: 'terminal', result: 'draw', drawReason: 'stalemate' });
+      const moments = deriveCinematicMoments(plan, timeline, analysis, EMPTY_UNDERSTANDING, EMPTY_STORY);
+      expect(moments).toHaveLength(1);
+      const moment = moments[0]!;
+      expect(moment.kind).toBe('terminal-result-highlight');
+      expect(moment.label).toBe('Stalemate');
+      expect(moment.reason).toBe('The game ended in a stalemate — a draw by no legal moves.');
+      expect(moment.narratives).toEqual([
+        { label: 'Stalemate', reason: 'The game ended in a stalemate — a draw by no legal moves.' },
+        { label: 'Stalemate Swindle', reason: 'The side that was behind on material escaped with a stalemate.' }
+      ]);
+    });
+
+    it('exact duplicate (label, reason) pairs collapse to a single narrative even though two directives produced them', () => {
+      // Two overlapping archetype-track directives for the SAME archetype
+      // produce identical label+reason (archetypeReason depends only on
+      // the archetype, not on which plies fired it) — a true duplicate,
+      // not two distinct narratives.
+      const timeline = timelineFromDurations([600, 600, 600, 600]);
+      const plan = cinematicPlan([
+        directive('archetype-track', 1, 2, { kind: 'archetypeSignal', archetype: 'king-hunt' }),
+        directive('archetype-track', 2, 3, { kind: 'archetypeSignal', archetype: 'king-hunt' })
+      ]);
+      const moments = deriveCinematicMoments(plan, timeline, analysisEndingWith(3, { kind: 'cp', cp: 0 }), EMPTY_UNDERSTANDING, EMPTY_STORY);
+      expect(moments).toHaveLength(1);
+      expect(moments[0]!.fromPly).toBe(1);
+      expect(moments[0]!.toPly).toBe(3);
+      expect(moments[0]!.narratives).toEqual([
+        { label: 'King Hunt', reason: 'A forced sequence of checks drove the king across the board, ending in mate.' }
+      ]);
+    });
+
+    it('threat-refutation-arrow + central-conflict-highlight overlap preserves both narratives when their label/reason pairs genuinely differ', () => {
+      const timeline = timelineFromDurations([600, 600, 600, 600, 600, 600]);
+      const plan = cinematicPlan([
+        directive('threat-refutation-arrow', 5, 5),
+        directive('central-conflict-highlight', 5, 6, { kind: 'beat', id: 'beat-1' })
+      ]);
+      const understanding = understandingFixture({
+        threats: [threatRecord('mate-threat', 4, 5)],
+        turningPoints: [turningPoint('tp-1', 5, 'skewer', 'material-gain')]
+      });
+      const story = storyFixture({ beats: [climaxBeat('beat-1', 5, 'tp-1')] });
+      const moments = deriveCinematicMoments(plan, timeline, analysisEndingWith(6, { kind: 'cp', cp: 0 }), understanding, story);
+      expect(moments).toHaveLength(1);
+      const moment = moments[0]!;
+      // central-conflict-highlight (2) outranks threat-refutation-arrow (1) in KIND_PRIORITY.
+      expect(moment.kind).toBe('central-conflict-highlight');
+      expect(moment.label).toBe('Climax');
+      expect(moment.narratives).toEqual([
+        { label: 'Climax', reason: 'The decisive moment — a skewer led to a material gain.' },
+        { label: 'Threat Refutation', reason: 'A threatened mate was refuted here.' }
+      ]);
+    });
+
+    it('narratives[0] always equals {label, reason} across every fixture already exercised above', () => {
+      const timeline = timelineFromDurations([600, 600, 600, 600]);
+      const plan = cinematicPlan([
+        directive('threat-refutation-arrow', 1, 1),
+        directive('central-conflict-highlight', 2, 2),
+        directive('archetype-track', 3, 3, { kind: 'archetypeSignal', archetype: 'king-hunt' }),
+        directive('terminal-result-highlight', 4, 4, { kind: 'terminal' })
+      ]);
+      const moments = deriveCinematicMoments(plan, timeline, analysisEndingWith(4, { kind: 'terminal', result: 'white-wins' }), EMPTY_UNDERSTANDING, EMPTY_STORY);
+      expect(moments.length).toBeGreaterThan(0);
+      for (const m of moments) {
+        expect(m.narratives.length).toBeGreaterThanOrEqual(1);
+        expect(m.narratives[0]).toEqual({ label: m.label, reason: m.reason });
+      }
+    });
+
+    it('narrative derivation is deterministic across repeated calls, including array order and content', () => {
+      const timeline = timelineFromDurations(Array(46).fill(600));
+      const plan = cinematicPlan([
+        directive('archetype-track', 39, 40, { kind: 'archetypeSignal', archetype: 'forced-trap' }),
+        directive('archetype-track', 39, 46, { kind: 'archetypeSignal', archetype: 'king-hunt' }),
+        directive('central-conflict-highlight', 40, 40, { kind: 'beat', id: 'beat-climax-40' })
+      ]);
+      const understanding = understandingFixture({ turningPoints: [turningPoint('tp-1', 40, 'fork', 'forced-mate')] });
+      const story = storyFixture({ beats: [climaxBeat('beat-climax-40', 40, 'tp-1')] });
+      const analysis = analysisEndingWith(46, { kind: 'cp', cp: 0 });
+
+      const first = deriveCinematicMoments(plan, timeline, analysis, understanding, story);
+      const second = deriveCinematicMoments(plan, timeline, analysis, understanding, story);
+      expect(first).toEqual(second);
+      expect(first[0]!.narratives).toEqual(second[0]!.narratives);
+    });
+
+    it('preserves every existing timing/navigation invariant unchanged: targetTimeMs, atMs, untilMs, fromPly, toPly, id', () => {
+      const timeline = timelineFromDurations(Array(46).fill(600));
+      const plan = cinematicPlan([
+        directive('archetype-track', 39, 40, { kind: 'archetypeSignal', archetype: 'forced-trap' }),
+        directive('archetype-track', 39, 46, { kind: 'archetypeSignal', archetype: 'king-hunt' }),
+        directive('central-conflict-highlight', 40, 40, { kind: 'beat', id: 'beat-climax-40' })
+      ]);
+      const understanding = understandingFixture({ turningPoints: [turningPoint('tp-1', 40, 'fork', 'forced-mate')] });
+      const story = storyFixture({ beats: [climaxBeat('beat-climax-40', 40, 'tp-1')] });
+      const analysis = analysisEndingWith(46, { kind: 'cp', cp: 0 });
+      const [moment] = deriveCinematicMoments(plan, timeline, analysis, understanding, story);
+      expect(moment!.id).toBe('archetype-track-39-46');
+      expect(moment!.fromPly).toBe(39);
+      expect(moment!.toPly).toBe(46);
+      expect(moment!.atMs).toBe(38 * 600);
+      expect(moment!.untilMs).toBe(46 * 600);
+      expect(moment!.targetTimeMs).toBe(46 * 600 - 1);
     });
   });
 });

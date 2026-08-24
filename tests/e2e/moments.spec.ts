@@ -171,6 +171,27 @@ test('Evergreen: a central-conflict/archetype moment is navigable and Export sti
   const forcedTrapItem = page.locator('#moments-list li', { hasText: 'Forced Trap' });
   await expect(forcedTrapItem.locator('.moment-reason')).toHaveText('A sacrifice forced a decisive sequence.');
 
+  // Phase 2.8: this exact overlap (forced-trap archetype-track [39,40],
+  // king-hunt archetype-track [39,46], and the climax central-conflict-
+  // highlight [40,40]) is the canonical real-game case this phase fixes —
+  // the King Hunt and Climax narratives used to be silently discarded by
+  // the old single-primary-directive collapse. They must now survive as
+  // secondary entries in the SAME navigational Moment (no new Moment count
+  // and no new navigation target — confirmed below). The exact Climax
+  // reason text was captured from a fresh real-browser run against this
+  // exact PGN before being hardcoded here, not guessed.
+  await expect(momentButtons).toHaveCount(2);
+  const secondaryNarratives = forcedTrapItem.locator('.moment-narratives li');
+  await expect(secondaryNarratives).toHaveCount(2);
+  await expect(secondaryNarratives.nth(0)).toHaveText('King Hunt: A forced sequence of checks drove the king across the board, ending in mate.');
+  await expect(secondaryNarratives.nth(1)).toHaveText('Climax: The decisive moment — a fork led to a material gain.');
+  // The primary button's accessible name is unaffected by the secondary list.
+  await expect(forcedTrapButton).toHaveText('Forced Trap — Move 46');
+  // A Moment with only one narrative (the terminal Checkmate) renders no
+  // secondary list at all — the UI stays exactly as compact as Phase 2.7.
+  const checkmateItem = page.locator('#moments-list li', { hasText: 'Checkmate' });
+  await expect(checkmateItem.locator('.moment-narratives')).toHaveCount(0);
+
   await page.click('#restart-btn');
   await page.waitForTimeout(30);
   const beforeIndicator = await page.locator('#move-indicator').innerText();

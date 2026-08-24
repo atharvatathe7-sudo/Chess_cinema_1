@@ -299,13 +299,25 @@ export function mountPanel(root: HTMLElement): void {
     }
 
     momentsList.innerHTML = moments
-      .map(
-        (m, i) =>
-          `<li>
+      .map((m, i) => {
+        // Phase 2.8 — the primary narrative (m.label/m.reason, always
+        // narratives[0]) keeps its exact Phase 2.7 markup/selectors
+        // unchanged; any remaining distinct narratives render underneath
+        // as a plain list, never inside the button (its accessible name
+        // stays exactly the primary label, unchanged).
+        const secondary = m.narratives.slice(1);
+        const secondaryHtml =
+          secondary.length > 0
+            ? `<ul class="moment-narratives" style="list-style:none;padding:0;margin:2px 4px 4px;font-size:12px;color:#555;">${secondary
+                .map((n) => `<li>${escapeHtml(n.label)}: ${escapeHtml(n.reason)}</li>`)
+                .join('')}</ul>`
+            : '';
+        return `<li>
             <button type="button" class="cc-btn moment-btn" data-index="${i}" style="width:100%;text-align:left;">${escapeHtml(m.label)} — Move ${m.toPly}</button>
             <div class="moment-reason" style="font-size:12px;color:#555;padding:2px 4px 4px;">${escapeHtml(m.reason)}</div>
-          </li>`
-      )
+            ${secondaryHtml}
+          </li>`;
+      })
       .join('');
 
     momentsList.querySelectorAll<HTMLButtonElement>('.moment-btn').forEach((btn) => {

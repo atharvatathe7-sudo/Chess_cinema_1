@@ -62,6 +62,25 @@ const ARCHETYPE_LABEL: Readonly<Record<StoryArchetype, string>> = {
   'forced-trap': 'Forced Trap'
 };
 
+/**
+ * Phase 2.8 — mirrors director/annotations.ts's own (unexported)
+ * ARCHETYPE_COLOR_ORDER exactly, same justification as KIND_PRIORITY above:
+ * director/ is a protected directory, so the one already-established
+ * archetype tie-break order is restated here rather than imported.
+ */
+const ARCHETYPE_COLOR_ORDER: Readonly<Record<StoryArchetype, number>> = {
+  'forced-trap': 0,
+  'king-hunt': 1,
+  'pawn-journey': 2,
+  'stalemate-swindle': 3
+};
+
+/** Phase 2.8 — one competing-but-true explanation for a Moment; see CinematicMoment.narratives. */
+export interface MomentNarrative {
+  readonly label: string;
+  readonly reason: string;
+}
+
 export interface CinematicMoment {
   readonly id: string;
   readonly kind: AnnotationDirectiveKind;
@@ -74,6 +93,14 @@ export interface CinematicMoment {
    * prose, never an invented chess interpretation. See reasonFor below.
    */
   readonly reason: string;
+  /**
+   * Phase 2.8 — every distinct (label, reason) pair among the directives
+   * that were merged into this Moment, in the same deterministic priority
+   * order used to pick `label`/`reason` (see orderGroup below).
+   * narratives[0] is always exactly {label, reason} above — label/reason
+   * are not a second, independently-derived source of truth.
+   */
+  readonly narratives: readonly MomentNarrative[];
   /** Inclusive, same convention as AnnotationDirective. */
   readonly fromPly: number;
   readonly toPly: number;
@@ -246,16 +273,47 @@ function buildPlyTimingMap(timeline: Timeline): ReadonlyMap<number, { atMs: numb
 }
 
 /**
+ * Phase 2.8 — deterministic full ordering of a merge group's directives,
+ * highest-priority first: same KIND_PRIORITY table as before, with
+ * archetype-track ties broken by ARCHETYPE_COLOR_ORDER (mirrors director/
+ * annotations.ts's own tie-break, same restatement rationale as
+ * KIND_PRIORITY). All other ties keep the group's incoming order (stable
+ * sort), which is already fromPly-ascending from the initial `sorted` pass
+ * below. This is the same priority computation Phase 2.6/2.7 used to pick
+ * a single `primary` directive — Phase 2.8 reuses it to order the *whole*
+ * group instead of collapsing straight to its winner, so every existing
+ * primary-selection outcome (kind/label/reason) is unchanged by construction.
+ */
+function orderGroup(group: readonly AnnotationDirective[]): readonly AnnotationDirective[] {
+  return [...group].sort((a, b) => {
+    if (KIND_PRIORITY[a.kind] !== KIND_PRIORITY[b.kind]) return KIND_PRIORITY[b.kind] - KIND_PRIORITY[a.kind];
+    if (a.evidenceRef.kind === 'archetypeSignal' && b.evidenceRef.kind === 'archetypeSignal') {
+      return ARCHETYPE_COLOR_ORDER[a.evidenceRef.archetype] - ARCHETYPE_COLOR_ORDER[b.evidenceRef.archetype];
+    }
+    return 0;
+  });
+}
+
+/**
  * Pure: (CinematicPlan, Timeline, GameAnalysis, GameUnderstanding, StoryPlan)
  * -> CinematicMoment[], ascending by atMs (tie-broken by fromPly), deterministic and
  * byte-identical for identical input. Directives whose ply ranges overlap
  * (share at least one ply) are merged into a single moment, spanning their
- * union and labeled by the highest-KIND_PRIORITY directive among them —
- * see the Phase 2.6 specification section H for why interval-overlap
+ * union — see the Phase 2.6 specification section H for why interval-overlap
  * (rather than shared StoryBeat id) is the merge key: it makes no
  * assumption about whether a terminal-result-highlight (which has no
  * owning StoryBeat) happens to fall inside the same beat as a
  * central-conflict-highlight.
+ *
+ * Phase 2.8: a merge group's directives frequently represent genuinely
+ * distinct, simultaneously-true narratives (e.g. a king-hunt archetype and
+ * a forced-trap archetype both firing over overlapping plies) — collapsing
+ * straight to one directive's label/reason silently discarded the rest.
+ * Every directive in the group is now kept as a MomentNarrative (deduped
+ * only on exact (label, reason) equality — see orderGroup/narratives
+ * below); `label`/`reason`/`kind` remain exactly what the old single-
+ * primary selection would have produced, since narratives[0] is always the
+ * highest-priority directive's own {label, reason}.
  *
  * Every moment's targetTimeMs is untilMs - 1: durationMs is always an
  * integer count of milliseconds (director/lowerToTimeline.ts rounds it),
@@ -306,13 +364,24 @@ export function deriveCinematicMoments(
     const untilMs = end.atMs + end.durationMs;
     if (untilMs <= atMs) continue;
 
-    const primary = group.reduce((best, d) => (KIND_PRIORITY[d.kind] > KIND_PRIORITY[best.kind] ? d : best));
+    const ordered = orderGroup(group);
+    const narratives: MomentNarrative[] = [];
+    const seen = new Set<string>();
+    for (const d of ordered) {
+      const label = labelFor(d, analysis);
+      const reason = reasonFor(d, understanding, story, analysis);
+      const key = `${label}\u0000${reason}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      narratives.push({ label, reason });
+    }
 
     moments.push({
-      id: `${primary.kind}-${fromPly}-${toPly}`,
-      kind: primary.kind,
-      label: labelFor(primary, analysis),
-      reason: reasonFor(primary, understanding, story, analysis),
+      id: `${ordered[0]!.kind}-${fromPly}-${toPly}`,
+      kind: ordered[0]!.kind,
+      label: narratives[0]!.label,
+      reason: narratives[0]!.reason,
+      narratives,
       fromPly,
       toPly,
       atMs,

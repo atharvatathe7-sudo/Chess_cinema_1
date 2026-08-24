@@ -500,6 +500,7 @@ export function mountPanel(root: HTMLElement): void {
       const blob = await runExport(state, assets, encoder, {
         fps: EXPORT_FPS,
         dims,
+        captions: true,
         onProgress: (done, total) => {
           exportProgress.textContent = `Exporting video… ${Math.round((done / total) * 100)}%`;
         }

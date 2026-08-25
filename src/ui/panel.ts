@@ -25,6 +25,19 @@ const BOARD_VIEWPORT_FRACTION = 0.94;
 const EXPORT_FPS = 24;
 
 /**
+ * Phase 9 — "Export Video" renders at a fixed 9:16 portrait size,
+ * independent of the on-screen board's own square `dims` (derived below
+ * from boardCssSize/devicePixelRatio). runExport.ts always builds a fresh
+ * OffscreenCanvas from whatever RenderDims it's given (never the on-screen
+ * canvas), so this is a genuinely separate export target — the on-screen
+ * preview, and "Export PNG sequence" (which still passes the shared square
+ * `dims`), are completely unaffected. 1080x1920 was chosen as the literal
+ * target resolution requested for Phase 9; both dimensions are even, which
+ * matters for VP9's 4:2:0 chroma subsampling.
+ */
+const VIDEO_EXPORT_DIMS: RenderDims = { width: 1080, height: 1920 };
+
+/**
  * Phase 1.1's UI: load a PGN, play/pause, restart, step to the previous
  * or next move, and scrub a touch-friendly timeline — plus export. Still
  * no board editing, drag-to-move, or annotation authoring (see
@@ -150,7 +163,7 @@ export function mountPanel(root: HTMLElement): void {
   // explanatory title if it resolves unsupported — never silently fails
   // and never lets a click through to an encoder that can't work.
   let videoExportSupported = false;
-  void detectVp9VideoExportSupport(dims, EXPORT_FPS).then((support) => {
+  void detectVp9VideoExportSupport(VIDEO_EXPORT_DIMS, EXPORT_FPS).then((support) => {
     videoExportSupported = support.supported;
     exportVideoBtn.title = support.supported ? '' : (support.reason ?? 'Video export is unavailable in this browser.');
     setEnabled(!!store.getState().game);
@@ -499,7 +512,7 @@ export function mountPanel(root: HTMLElement): void {
       const encoder = new Vp9VideoEncoder();
       const blob = await runExport(state, assets, encoder, {
         fps: EXPORT_FPS,
-        dims,
+        dims: VIDEO_EXPORT_DIMS,
         captions: true,
         onProgress: (done, total) => {
           exportProgress.textContent = `Exporting video… ${Math.round((done / total) * 100)}%`;

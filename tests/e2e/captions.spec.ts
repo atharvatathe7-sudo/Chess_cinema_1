@@ -15,6 +15,25 @@ import { expect, test, type Page } from '@playwright/test';
  * — this file's job is what only a real browser/real artifact can prove:
  * that the pixels are actually there, actually absent where they should be,
  * and the container is still a normal, playable, duration-unchanged WebM.
+ *
+ * Phase 9 — "Export Video" now renders at a fixed 1080x1920 portrait size
+ * (ui/panel.ts's VIDEO_EXPORT_DIMS), independent of "Export PNG sequence"'s
+ * own unchanged square dims (see tests/e2e/portraitExport.spec.ts for full
+ * portrait-specific coverage). That retired this file's original
+ * PNG-vs-WebM same-pixel-position comparison for caption detection: the two
+ * exports no longer share a composition at "the bottom of the frame" (PNG's
+ * bottom row is real board content; portrait WebM's bottom rows are deep
+ * inside the — now correctly rendered, see render/Renderer.ts's Phase 9
+ * clip — letterbox band below the board), so a direct luminance diff
+ * between them no longer isolates the caption scrim at all. The caption
+ * tests below were updated to compare the WebM against *itself* at an
+ * uncaptioned vs. a captioned timestamp instead — decodeCaptionZoneMetrics's
+ * wide sampling band (CAPTION_ZONE_BAND_FRACTION), rather than a single row,
+ * is also required at portrait dims: drawCaptions.ts's scrim is drawn over the
+ * letterbox (already near-black), not over bright board content as at
+ * square dims, so the scrim itself adds no contrast — only the caption's
+ * own light text glyphs raise the average, and a single fixed row is not
+ * reliably guaranteed to intersect any glyph pixel.
  */
 
 test.describe.configure({ timeout: 180_000 });
@@ -31,12 +50,24 @@ const PROMOTION_RACE = '1. a4 h5 2. a5 h4 3. a6 h3 4. axb7 hxg2 5. bxa8=Q gxh1=Q
 // archetype signal, no terminal result).
 const QUIET = '1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 4. Ba4 Nf6 5. O-O Be7';
 
-// Mirrors ui/panel.ts's own EXPORT_FPS constant exactly — read directly
-// from source this session, not guessed. Used only to convert a PNG
-// sequence's own frame index into the exact video timestamp that frame
-// corresponds to (frameIndexToTimeMs's own formula), never as a duration
-// assumption.
-const EXPORT_FPS = 24;
+/**
+ * Phase 9 — fraction of frame height used to detect caption presence/absence
+ * (and, via the Evergreen test's own rowAverages-based bandDiff, that two
+ * captions' content differs) with decodeCaptionZoneMetrics. Matches
+ * tests/e2e/portraitExport.spec.ts's own empirically-verified 300-row band
+ * at 1920px height (300/1920 ≈ 0.156, rounded) exactly, rather than the
+ * wider 0.25 this file originally used only for the content-differs check.
+ * At portrait dims, a
+ * caption's scrim contributes no contrast of its own (it's drawn over
+ * already-near-black letterbox, not bright board content, unlike at square
+ * dims) — only its own light text-glyph pixels do, and diluting that signal
+ * across a band 60% wider than the caption itself actually is (drowning it
+ * in additional, unrelated, uniformly-black letterbox rows) was empirically
+ * unreliable — the original 0.25 caused real intermittent false negatives
+ * here, while this exact fraction is independently, repeatedly proven
+ * reliable across all 5 canonical games in portraitExport.spec.ts.
+ */
+const CAPTION_ZONE_BAND_FRACTION = 300 / 1920;
 
 async function loadAnalyzeDirect(page: Page, pgn: string): Promise<void> {
   await page.goto('/');
@@ -71,65 +102,65 @@ async function downloadBytes(page: Page, clickSelector: string): Promise<Buffer>
 }
 
 /**
- * Minimal reader for the STORE-only ZIP format export/zip.ts itself writes
- * (see its own doc comment: "STORE method only ... no compression library
- * is needed") — sequentially walks local file headers, nothing to inflate.
- * Returns every frame-XXXXX.png entry, keyed by its own numeric index, so
- * the true last frame index (frameCount - 1) is read directly off the
- * archive's own contents rather than recomputed/estimated from anything
- * displayed in the UI.
+ * Phase 9 — per-row luminance averages across a bottom band of the frame,
+ * plus the band's own overall average. Computed entirely inside the browser
+ * (never returning a raw RGBA pixel array to Node) — at 1080x1920 a full
+ * getImageData().data array is ~8.3 million numbers, and returning that from
+ * page.evaluate three times per test (once per sampled timestamp) caused
+ * real page.evaluate timeouts once export resolution grew ~9x over the
+ * pre-Phase-9 480x480 export (see the Evergreen test's own note below,
+ * where this was first diagnosed). rowAverages (one number per row in the
+ * band — a few hundred numbers, not millions) is still enough to detect
+ * that two captioned frames' own text content differs (see the Evergreen
+ * test), while avgLuminance alone answers every other test's "is a caption
+ * present" question.
  */
-function listPngFrames(zipBytes: Buffer): Map<number, Buffer> {
-  const LOCAL_FILE_HEADER_SIG = 0x04034b50;
-  const frames = new Map<number, Buffer>();
-  let offset = 0;
-  while (offset + 30 <= zipBytes.length && zipBytes.readUInt32LE(offset) === LOCAL_FILE_HEADER_SIG) {
-    const compressedSize = zipBytes.readUInt32LE(offset + 18);
-    const nameLength = zipBytes.readUInt16LE(offset + 26);
-    const extraLength = zipBytes.readUInt16LE(offset + 28);
-    const nameStart = offset + 30;
-    const name = zipBytes.toString('utf8', nameStart, nameStart + nameLength);
-    const dataStart = nameStart + nameLength + extraLength;
-    const data = zipBytes.subarray(dataStart, dataStart + compressedSize);
-
-    const match = name.match(/^frame-(\d+)\.png$/);
-    if (match) frames.set(Number(match[1]), Buffer.from(data));
-
-    offset = dataStart + compressedSize;
-  }
-  if (frames.size === 0) throw new Error('listPngFrames: no frame-XXXXX.png entries found — is this really a chess-cinema-export.zip?');
-  return frames;
-}
-
-interface DecodedFrame {
+interface CaptionZoneMetrics {
   readonly width: number;
   readonly height: number;
-  /** Flat RGBA, same layout as CanvasRenderingContext2D.getImageData's own .data. */
-  readonly data: number[];
+  readonly avgLuminance: number;
+  readonly rowAverages: readonly number[];
 }
 
-/** Decodes a PNG (frame bytes straight out of the ZIP) into pixels, entirely inside the real browser (createImageBitmap + OffscreenCanvas — no new dependency, no Node-side image decoder). */
-async function decodePngFrame(page: Page, pngBytes: Buffer): Promise<DecodedFrame> {
-  const base64 = pngBytes.toString('base64');
+/** Reads a real WebM's own decoded duration (seconds) via a real <video> element — used to convert a fraction (e.g. Promotion race's mid-video sample point) into an absolute seconds value for decodeCaptionZoneMetrics. */
+async function videoDuration(page: Page, webmBytes: Buffer): Promise<number> {
+  const base64 = webmBytes.toString('base64');
   return page.evaluate(async (b64) => {
     const binary = atob(b64);
     const bytes = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    const blob = new Blob([bytes as BlobPart], { type: 'image/png' });
-    const bitmap = await createImageBitmap(blob);
-    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
-    const ctx = canvas.getContext('2d')!;
-    ctx.drawImage(bitmap, 0, 0);
-    const { data } = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
-    return { width: bitmap.width, height: bitmap.height, data: Array.from(data) };
+    const blob = new Blob([bytes as BlobPart], { type: 'video/webm' });
+    const url = URL.createObjectURL(blob);
+    const video = document.createElement('video');
+    video.src = url;
+    video.muted = true;
+    document.body.appendChild(video);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        video.addEventListener('loadedmetadata', () => resolve(), { once: true });
+        video.addEventListener('error', () => reject(new Error('video load error')), { once: true });
+        setTimeout(() => reject(new Error('loadedmetadata timeout')), 15_000);
+      });
+      return video.duration;
+    } finally {
+      URL.revokeObjectURL(url);
+      video.remove();
+    }
   }, base64);
 }
 
-/** Decodes one real, played-back frame of a real WebM at timeSec — the same real-<video>-element technique already established in tests/e2e/videoExport.spec.ts. */
-async function decodeVideoFrame(page: Page, webmBytes: Buffer, timeSec: number): Promise<DecodedFrame> {
+/**
+ * Decodes one real, played-back frame of a real WebM at timeSec (same
+ * real-<video>-element technique already established in
+ * tests/e2e/videoExport.spec.ts) and reduces the bottom bandFraction of the
+ * frame to per-row luminance averages, entirely inside the browser — see
+ * CaptionZoneMetrics's own doc comment for why this never returns a raw
+ * pixel array.
+ */
+async function decodeCaptionZoneMetrics(page: Page, webmBytes: Buffer, timeSec: number, bandFraction: number): Promise<CaptionZoneMetrics> {
   const base64 = webmBytes.toString('base64');
   return page.evaluate(
-    async ({ b64, t }) => {
+    async ({ b64, t, bandFraction }) => {
       const binary = atob(b64);
       const bytes = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
@@ -161,42 +192,40 @@ async function decodeVideoFrame(page: Page, webmBytes: Buffer, timeSec: number):
         const ctx = canvas.getContext('2d')!;
         ctx.drawImage(video, 0, 0);
         const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        return { width: canvas.width, height: canvas.height, data: Array.from(data) };
+
+        function luminance(r: number, g: number, b: number): number {
+          return 0.299 * r + 0.587 * g + 0.114 * b;
+        }
+
+        const yStart = Math.floor(canvas.height * (1 - bandFraction));
+        const rowAverages: number[] = [];
+        let totalSum = 0;
+        let totalCount = 0;
+        for (let y = yStart; y < canvas.height; y++) {
+          let rowSum = 0;
+          for (let x = 0; x < canvas.width; x++) {
+            const i = (y * canvas.width + x) * 4;
+            const l = luminance(data[i]!, data[i + 1]!, data[i + 2]!);
+            rowSum += l;
+            totalSum += l;
+            totalCount++;
+          }
+          rowAverages.push(rowSum / canvas.width);
+        }
+
+        return {
+          width: canvas.width,
+          height: canvas.height,
+          avgLuminance: totalCount > 0 ? totalSum / totalCount : 0,
+          rowAverages
+        };
       } finally {
         URL.revokeObjectURL(url);
         video.remove();
       }
     },
-    { b64: base64, t: timeSec }
+    { b64: base64, t: timeSec, bandFraction }
   );
-}
-
-function luminance(r: number, g: number, b: number): number {
-  return 0.299 * r + 0.587 * g + 0.114 * b;
-}
-
-/** Average luminance of a single row near the very bottom of the frame — comfortably inside drawCaptions.ts's caption band under any real Moment (its minimum possible height, one label line + one reason line + padding, is well over a few pixels), and comfortably below any real board content when a scrim is NOT present. */
-function bottomRowAvgLuminance(frame: DecodedFrame, rowsFromBottom = 3): number {
-  const y = frame.height - 1 - rowsFromBottom;
-  let sum = 0;
-  for (let x = 0; x < frame.width; x++) {
-    const i = (y * frame.width + x) * 4;
-    sum += luminance(frame.data[i]!, frame.data[i + 1]!, frame.data[i + 2]!);
-  }
-  return sum / frame.width;
-}
-
-/** RGBA pixels of the bottom bandFraction of the frame, flattened — used to prove two captions' own content differs (not just that a scrim exists). */
-function bottomBandPixels(frame: DecodedFrame, bandFraction: number): number[] {
-  const yStart = Math.floor(frame.height * (1 - bandFraction));
-  const out: number[] = [];
-  for (let y = yStart; y < frame.height; y++) {
-    for (let x = 0; x < frame.width; x++) {
-      const i = (y * frame.width + x) * 4;
-      out.push(frame.data[i]!, frame.data[i + 1]!, frame.data[i + 2]!, frame.data[i + 3]!);
-    }
-  }
-  return out;
 }
 
 function sumAbsDiff(a: readonly number[], b: readonly number[]): number {
@@ -205,50 +234,32 @@ function sumAbsDiff(a: readonly number[], b: readonly number[]): number {
   return total;
 }
 
-test('Scholar\'s Mate: the exported WebM\'s final frame (inside the Checkmate Moment\'s window) is visibly darker at the caption band than the identical frame in the PNG-sequence export', async ({ page }) => {
+test('Scholar\'s Mate: the exported WebM\'s final frame (inside the Checkmate Moment\'s window) carries a visible caption that the first frame does not', async ({ page }) => {
   await loadAnalyzeDirect(page, SCHOLARS_MATE);
-
-  // PNG export first: its own ZIP contents are the ground truth for how
-  // many frames this exact export produces (frameCount(scene.durationMs,
-  // 24) — never independently recomputed here from anything the UI merely
-  // displays).
-  const pngZipBytes = await downloadBytes(page, '#export-btn');
-  await expect(page.locator('#export-progress')).toHaveText('Export complete.');
-  const pngFrames = listPngFrames(pngZipBytes);
-  const lastFrameIndex = Math.max(...pngFrames.keys());
-  const lastPngBytes = pngFrames.get(lastFrameIndex)!;
 
   await expect(page.locator('#export-video-btn')).toBeEnabled({ timeout: 15_000 });
   const webmBytes = await downloadBytes(page, '#export-video-btn');
   await expect(page.locator('#export-progress')).toHaveText('Export complete.');
   expect(webmBytes.subarray(0, 4).toString('hex')).toBe('1a45dfa3'); // still a real WebM/EBML file
 
-  // frameIndexToTimeMs(lastFrameIndex, EXPORT_FPS) / 1000, in seconds — the
-  // exact same deterministic formula export/FrameSource.ts uses, applied
-  // to the ZIP's own true last frame index.
-  const lastFrameTimeSec = lastFrameIndex / EXPORT_FPS;
+  // Sequential, not Promise.all — see the Evergreen test's own Phase 9 note below.
+  const startMetrics = await decodeCaptionZoneMetrics(page, webmBytes, 0, CAPTION_ZONE_BAND_FRACTION);
+  const finalMetrics = await decodeCaptionZoneMetrics(page, webmBytes, 9999, CAPTION_ZONE_BAND_FRACTION);
 
-  const [pngFrame, webmFrame] = await Promise.all([decodePngFrame(page, lastPngBytes), decodeVideoFrame(page, webmBytes, lastFrameTimeSec)]);
+  expect(finalMetrics.width).toBe(1080);
+  expect(finalMetrics.height).toBe(1920);
 
-  expect(webmFrame.width).toBe(pngFrame.width);
-  expect(webmFrame.height).toBe(pngFrame.height);
-
-  const pngLuminance = bottomRowAvgLuminance(pngFrame);
-  const webmLuminance = bottomRowAvgLuminance(webmFrame);
-
-  // The PNG export (captions:false) has no scrim at all here — this is the
-  // "unchanged" baseline. The WebM export (captions:true) draws
-  // drawCaptions.ts's own semi-transparent (55%) black scrim across the
-  // full width of the bottom band, which — whatever the board/piece pixels
-  // underneath happen to be — always makes that region substantially
-  // darker. The threshold (40 luminance points, out of 0-255) comfortably
-  // exceeds ordinary VP9 lossy-compression noise on an otherwise smooth,
-  // solid-color region while remaining decisively smaller than a real
-  // scrim's effect.
-  expect(pngLuminance - webmLuminance).toBeGreaterThan(40);
+  // No Moment is active at t=0 (Checkmate is the game's terminal-result
+  // Moment) -> drawCaptions.ts draws nothing there, so the caption band
+  // reads as plain (correctly unpainted, see render/Renderer.ts's Phase 9
+  // clip) letterbox. The final frame carries the Checkmate caption's label
+  // + reason text, whose light glyph pixels measurably raise the band's
+  // average even though the scrim itself (drawn over already-near-black
+  // letterbox, not bright board content) contributes no contrast of its own.
+  expect(finalMetrics.avgLuminance - startMetrics.avgLuminance, 'the captioned final frame should read brighter in the caption band than the uncaptioned first frame').toBeGreaterThan(3);
 });
 
-test('Quiet: zero Moments produce zero captions — the exported WebM\'s final frame matches the PNG export (no scrim anywhere)', async ({ page }) => {
+test('Quiet: zero Moments produce zero captions anywhere in the exported WebM', async ({ page }) => {
   await loadAnalyzeDirect(page, QUIET);
 
   // Confirmed zero navigable Moments for this game (director/annotations.ts
@@ -257,27 +268,19 @@ test('Quiet: zero Moments produce zero captions — the exported WebM\'s final f
   await expect(page.locator('#moments-section')).toBeVisible();
   await expect(page.locator('#moments-list button.moment-btn')).toHaveCount(0);
 
-  const pngZipBytes = await downloadBytes(page, '#export-btn');
-  await expect(page.locator('#export-progress')).toHaveText('Export complete.');
-  const pngFrames = listPngFrames(pngZipBytes);
-  const lastFrameIndex = Math.max(...pngFrames.keys());
-  const lastPngBytes = pngFrames.get(lastFrameIndex)!;
-
   await expect(page.locator('#export-video-btn')).toBeEnabled({ timeout: 15_000 });
   const webmBytes = await downloadBytes(page, '#export-video-btn');
   await expect(page.locator('#export-progress')).toHaveText('Export complete.');
 
-  const lastFrameTimeSec = lastFrameIndex / EXPORT_FPS;
-  const [pngFrame, webmFrame] = await Promise.all([decodePngFrame(page, lastPngBytes), decodeVideoFrame(page, webmBytes, lastFrameTimeSec)]);
-
-  const pngLuminance = bottomRowAvgLuminance(pngFrame);
-  const webmLuminance = bottomRowAvgLuminance(webmFrame);
+  const startMetrics = await decodeCaptionZoneMetrics(page, webmBytes, 0, CAPTION_ZONE_BAND_FRACTION);
+  const finalMetrics = await decodeCaptionZoneMetrics(page, webmBytes, 9999, CAPTION_ZONE_BAND_FRACTION);
 
   // No Moments -> momentsFor(state) is empty -> drawCaptions is a no-op for
-  // every frame (activeMomentAt always returns null) — the two exports'
-  // bottom rows should be close (only ordinary VP9 lossy-compression noise
-  // between them, not a 55%-black-scrim-sized gap).
-  expect(Math.abs(pngLuminance - webmLuminance)).toBeLessThan(25);
+  // every frame (activeMomentAt always returns null) — the caption band
+  // should read as plain, unchanging (correctly unpainted, see
+  // render/Renderer.ts's Phase 9 clip) letterbox at both ends of the video,
+  // with only ordinary VP9 lossy-compression noise between them.
+  expect(Math.abs(finalMetrics.avgLuminance - startMetrics.avgLuminance)).toBeLessThan(3);
 });
 
 test('Evergreen: caption is absent before any Moment begins, present during the Forced Trap Moment, and visibly different during the later Checkmate Moment', async ({ page }) => {
@@ -305,69 +308,85 @@ test('Evergreen: caption is absent before any Moment begins, present during the 
   const webmBytes = await downloadBytes(page, '#export-video-btn');
   await expect(page.locator('#export-progress')).toHaveText('Export complete.');
 
-  const [startFrame, forcedTrapFrame, checkmateFrame] = await Promise.all([
-    decodeVideoFrame(page, webmBytes, 0),
-    decodeVideoFrame(page, webmBytes, forcedTrapIndicator.currentSeconds),
-    decodeVideoFrame(page, webmBytes, checkmateIndicator.currentSeconds)
-  ]);
-
-  const startLuminance = bottomRowAvgLuminance(startFrame);
-  const forcedTrapLuminance = bottomRowAvgLuminance(forcedTrapFrame);
-  const checkmateLuminance = bottomRowAvgLuminance(checkmateFrame);
+  // Phase 9 — sequential, not Promise.all: three concurrent full-video
+  // loads of the same (now much larger — 1080x1920 vs the pre-Phase-9
+  // 480x480) WebM caused real resource contention in the browser and
+  // pushed this test past its own timeout; decoding one frame at a time
+  // (same pattern already established in cameraBounds.spec.ts and
+  // portraitExport.spec.ts) avoids it with no loss of coverage. Each
+  // decodeCaptionZoneMetrics call also returns only a small rowAverages
+  // array (a few hundred numbers), never a raw ~8.3-million-entry RGBA
+  // pixel array — see CaptionZoneMetrics's own doc comment; the original
+  // (pre-fix) version of this test transferred the latter three times and
+  // that alone was enough to independently blow the test timeout even with
+  // sequential decoding.
+  const startMetrics = await decodeCaptionZoneMetrics(page, webmBytes, 0, CAPTION_ZONE_BAND_FRACTION);
+  const forcedTrapMetrics = await decodeCaptionZoneMetrics(page, webmBytes, forcedTrapIndicator.currentSeconds, CAPTION_ZONE_BAND_FRACTION);
+  const checkmateMetrics = await decodeCaptionZoneMetrics(page, webmBytes, checkmateIndicator.currentSeconds, CAPTION_ZONE_BAND_FRACTION);
 
   // Well before the Forced Trap Moment even begins (move 46 of 47) — no
-  // scrim, so the band stays at ordinary board brightness.
-  expect(startLuminance - forcedTrapLuminance).toBeGreaterThan(40);
-  expect(startLuminance - checkmateLuminance).toBeGreaterThan(40);
+  // caption, so the band reads as plain (correctly unpainted, see
+  // render/Renderer.ts's Phase 9 clip) letterbox. The later, captioned
+  // frames' light text glyphs measurably raise the band's average (the
+  // scrim itself, drawn over already-near-black letterbox rather than
+  // bright board content at portrait dims, adds no contrast of its own).
+  expect(forcedTrapMetrics.avgLuminance - startMetrics.avgLuminance).toBeGreaterThan(3);
+  expect(checkmateMetrics.avgLuminance - startMetrics.avgLuminance).toBeGreaterThan(3);
 
-  // Both later Moments carry a caption (both darker than the start frame),
-  // but they are NOT the same caption — "Forced Trap" + its reason vs
-  // "Checkmate" + its reason are visibly different text in the same band.
-  const BAND_FRACTION = 0.25; // generous — comfortably contains drawCaptions.ts's own band at any realistic size
-  const bandDiff = sumAbsDiff(bottomBandPixels(forcedTrapFrame, BAND_FRACTION), bottomBandPixels(checkmateFrame, BAND_FRACTION));
-  expect(bandDiff).toBeGreaterThan(20_000);
+  // Both later Moments carry a caption (both brighter than the start
+  // frame), but they are NOT the same caption — "Forced Trap" + its reason
+  // vs "Checkmate" + its reason are visibly different text in the same
+  // band. rowAverages (one number per row in the band) is coarser than a
+  // full pixel-by-pixel diff, but still resolves genuinely different text
+  // layouts/lengths into a real difference.
+  const bandDiff = sumAbsDiff(forcedTrapMetrics.rowAverages, checkmateMetrics.rowAverages);
+  expect(bandDiff).toBeGreaterThan(20);
 });
 
-test('Promotion race and Stalemate: the real exported WebM carries a caption during each game\'s own Moment window', async ({ page }) => {
-  // Both games' own named Moment here (Pawn Journey at ply 10 — the game's
-  // own last ply, per tests/e2e/moments.spec.ts's "Pawn Journey — Move 10";
-  // Stalemate's own terminal-result-highlight, same reasoning as the
-  // Scholar's Mate test above) extends to the game's final ply, so — same
-  // as the Scholar's Mate/Quiet tests above — the exported video's own
-  // LAST frame is guaranteed inside that Moment's window. This is used
-  // instead of an assumed "t=0 has no active Moment" baseline: Promotion
-  // race's Pawn Journey signal starts at ply 1 (the very first move), so
-  // t=0 is actually already INSIDE its window for that game — an earlier
-  // version of this test wrongly assumed otherwise and failed against the
-  // real export. Comparing against the PNG-sequence export (captions:
-  // false, always) at the identical final frame is correct for every game,
-  // not just the ones where the Moment happens to start late.
-  for (const { pgn, momentLabel } of [
-    { pgn: PROMOTION_RACE, momentLabel: 'Pawn Journey' },
-    { pgn: STALEMATE, momentLabel: 'Stalemate' }
-  ]) {
-    await loadAnalyzeDirect(page, pgn);
+test('Stalemate: the real exported WebM carries a caption during its own terminal Moment window', async ({ page }) => {
+  await loadAnalyzeDirect(page, STALEMATE);
 
-    const momentButton = page.locator('#moments-list button.moment-btn', { hasText: momentLabel });
-    await expect(momentButton.first()).toBeVisible();
-    await expect(momentButton.first()).toContainText(/Move \d+$/);
+  const momentButton = page.locator('#moments-list button.moment-btn', { hasText: 'Stalemate' });
+  await expect(momentButton.first()).toBeVisible();
+  await expect(momentButton.first()).toContainText(/Move \d+$/);
 
-    const pngZipBytes = await downloadBytes(page, '#export-btn');
-    await expect(page.locator('#export-progress')).toHaveText('Export complete.');
-    const pngFrames = listPngFrames(pngZipBytes);
-    const lastFrameIndex = Math.max(...pngFrames.keys());
-    const lastPngBytes = pngFrames.get(lastFrameIndex)!;
+  await expect(page.locator('#export-video-btn')).toBeEnabled({ timeout: 15_000 });
+  const webmBytes = await downloadBytes(page, '#export-video-btn');
+  await expect(page.locator('#export-progress')).toHaveText('Export complete.');
 
-    await expect(page.locator('#export-video-btn')).toBeEnabled({ timeout: 15_000 });
-    const webmBytes = await downloadBytes(page, '#export-video-btn');
-    await expect(page.locator('#export-progress')).toHaveText('Export complete.');
+  // Stalemate's own terminal-result-highlight (same reasoning as the
+  // Scholar's Mate test above) extends to the game's final ply, so the
+  // exported video's own last frame is comfortably inside that window, and
+  // t=0 is not.
+  const startMetrics = await decodeCaptionZoneMetrics(page, webmBytes, 0, CAPTION_ZONE_BAND_FRACTION);
+  const finalMetrics = await decodeCaptionZoneMetrics(page, webmBytes, 9999, CAPTION_ZONE_BAND_FRACTION);
 
-    const lastFrameTimeSec = lastFrameIndex / EXPORT_FPS;
-    const [pngFrame, webmFrame] = await Promise.all([decodePngFrame(page, lastPngBytes), decodeVideoFrame(page, webmBytes, lastFrameTimeSec)]);
+  expect(finalMetrics.avgLuminance - startMetrics.avgLuminance, 'expected a visibly brighter caption band (text over letterbox) for "Stalemate"').toBeGreaterThan(3);
+});
 
-    const pngLuminance = bottomRowAvgLuminance(pngFrame);
-    const webmLuminance = bottomRowAvgLuminance(webmFrame);
+test('Promotion race: the real exported WebM carries a caption throughout, matching its own Moment window spanning the whole video', async ({ page }) => {
+  await loadAnalyzeDirect(page, PROMOTION_RACE);
 
-    expect(pngLuminance - webmLuminance, `expected a visibly darker caption band for "${momentLabel}" (pgn: ${pgn})`).toBeGreaterThan(30);
-  }
+  const momentButton = page.locator('#moments-list button.moment-btn', { hasText: 'Pawn Journey' });
+  await expect(momentButton.first()).toBeVisible();
+  await expect(momentButton.first()).toContainText(/Move \d+$/);
+
+  await expect(page.locator('#export-video-btn')).toBeEnabled({ timeout: 15_000 });
+  const webmBytes = await downloadBytes(page, '#export-video-btn');
+  await expect(page.locator('#export-progress')).toHaveText('Export complete.');
+
+  // Unlike every other canonical game, Promotion race's own single Moment
+  // (a directly-confirmed pipeline query found: archetype-track
+  // "Pawn Journey", atMs=0, untilMs=5800 — the game's own full
+  // sceneDurationMs) spans the ENTIRE video: there is no uncaptioned
+  // instant anywhere to diff against, so — unlike the other caption tests
+  // in this file — this asserts the caption band's absolute brightness
+  // directly rather than a before/after difference. Real measurement
+  // across this exact game's own export (fractions 0-0.999) put the
+  // captioned band consistently at ~6.8-7.6 average luminance, comfortably
+  // above the near-zero (<3, see the Quiet test's own threshold) noise
+  // floor an uncaptioned letterbox band reads at.
+  const metrics = await decodeCaptionZoneMetrics(page, webmBytes, 0.5 * (await videoDuration(page, webmBytes)), CAPTION_ZONE_BAND_FRACTION);
+
+  expect(metrics.avgLuminance, 'expected the caption band to show real (non-letterbox) content throughout Promotion race\'s video').toBeGreaterThan(5);
 });

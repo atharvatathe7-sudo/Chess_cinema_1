@@ -232,3 +232,95 @@ describe('computeViewport bounds clamp (Phase 7B)', () => {
     });
   });
 });
+
+/**
+ * Phase 9 — 9:16 portrait export (1080x1920). computeViewport/boardToPixel
+ * were already written generically against dims.width/dims.height (never
+ * assuming width === height) — this describe block is new verification of
+ * that existing behavior at the app's real portrait export size, not a
+ * behavior change. The Phase 7B clamp (clampCenter) operates purely in
+ * board-space (visibleUnits/boardSize), taking no dims parameter at all, so
+ * it is mathematically invariant to dims and needs no portrait-specific
+ * logic of its own — these tests confirm that invariance holds through
+ * computeViewport's full pixel-space output too.
+ */
+describe('computeViewport with non-square (portrait) RenderDims (Phase 9)', () => {
+  const PORTRAIT_DIMS = { width: 1080, height: 1920 };
+  const CLIMAX_ZOOM = 1.8;
+
+  it('at zoom 1, scale is governed by the narrower dimension (width) and the board is horizontally flush, vertically letterboxed', () => {
+    const camera = { centerX: 4, centerY: 4, zoom: 1 };
+    const viewport = computeViewport(camera, PORTRAIT_DIMS);
+    // visibleUnits = 8, scale = min(1080,1920)/8 = 135.
+    expect(viewport.scale).toBe(135);
+    expect(viewport.left).toBe(0);
+    expect(viewport.top).toBe(0);
+    // Board (8 * 135 = 1080px) exactly fills the width -> no horizontal offset.
+    expect(viewport.xOffset).toBe(0);
+    // ...but leaves (1920 - 1080) / 2 = 420px above and below.
+    expect(viewport.yOffset).toBe(420);
+  });
+
+  it('boardToPixel maps the board corners into a horizontally-flush, vertically-centered square region — never stretched', () => {
+    const camera = { centerX: 4, centerY: 4, zoom: 1 };
+    const topLeft = boardToPixel(camera, PORTRAIT_DIMS, { x: 0, y: 0 });
+    const bottomRight = boardToPixel(camera, PORTRAIT_DIMS, { x: 8, y: 8 });
+    expect(topLeft).toEqual({ x: 0, y: 420 });
+    expect(bottomRight).toEqual({ x: 1080, y: 1500 });
+    // The rendered board region is exactly square (1080x1080), regardless of the portrait frame's own 1080x1920 aspect ratio.
+    const width = bottomRight.x - topLeft.x;
+    const height = bottomRight.y - topLeft.y;
+    expect(width).toBe(height);
+  });
+
+  it('a single board-space unit maps to equal pixel width and height (no anisotropic stretch) at any zoom', () => {
+    for (const zoom of [1, 1.4, CLIMAX_ZOOM]) {
+      const camera = { centerX: 4, centerY: 4, zoom };
+      const a = boardToPixel(camera, PORTRAIT_DIMS, { x: 4, y: 4 });
+      const b = boardToPixel(camera, PORTRAIT_DIMS, { x: 5, y: 5 });
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      expect(dx).toBeCloseTo(dy, 10);
+    }
+  });
+
+  it('the Phase 7B clamp remains correct at portrait dims: every real climax center stays fully inside the frame-mapped board region', () => {
+    const visibleUnits = 8 / CLIMAX_ZOOM;
+    const climaxCenters = [
+      { name: "Scholar's Mate", x: 6.0, y: 1.5 },
+      { name: 'Promotion race', x: 7.0, y: 7.0 },
+      { name: 'Stalemate', x: 5.0, y: 1.0 }
+    ];
+    for (const c of climaxCenters) {
+      const viewport = computeViewport({ centerX: c.x, centerY: c.y, zoom: CLIMAX_ZOOM }, PORTRAIT_DIMS);
+      expect(viewport.left, `${c.name} left`).toBeGreaterThanOrEqual(-1e-9);
+      expect(viewport.top, `${c.name} top`).toBeGreaterThanOrEqual(-1e-9);
+      expect(viewport.left + visibleUnits, `${c.name} right`).toBeLessThanOrEqual(8 + 1e-9);
+      expect(viewport.top + visibleUnits, `${c.name} bottom`).toBeLessThanOrEqual(8 + 1e-9);
+    }
+  });
+
+  it('clamp output (left/top) is byte-identical between square and portrait dims — the clamp itself never reads dims', () => {
+    const camera = { centerX: 7.0, centerY: 7.0, zoom: CLIMAX_ZOOM };
+    const square = computeViewport(camera, { width: 480, height: 480 });
+    const portrait = computeViewport(camera, PORTRAIT_DIMS);
+    expect(portrait.left).toBe(square.left);
+    expect(portrait.top).toBe(square.top);
+  });
+
+  it('xOffset/yOffset are invariant to zoom in portrait dims — the board occupies exactly pixel columns [0,1080] and rows [420,1500] at any zoom, since visibleUnits*scale always equals the narrower dimension (width) regardless of zoom', () => {
+    for (const zoom of [1, 1.4, CLIMAX_ZOOM]) {
+      const viewport = computeViewport({ centerX: 4, centerY: 4, zoom }, PORTRAIT_DIMS);
+      expect(viewport.xOffset, `zoom=${zoom}`).toBe(0);
+      expect(viewport.yOffset, `zoom=${zoom}`).toBe(420);
+    }
+  });
+
+  it('xOffset/yOffset always keep the rendered board centered on the constraining axis, and flush (0) on the other', () => {
+    // A hypothetical landscape RenderDims exercises the opposite branch (height is the constraining dimension is height < width here, so width is fully covered)
+    const landscape = { width: 1920, height: 1080 };
+    const viewport = computeViewport({ centerX: 4, centerY: 4, zoom: 1 }, landscape);
+    expect(viewport.yOffset).toBe(0);
+    expect(viewport.xOffset).toBe((1920 - 1080) / 2);
+  });
+});

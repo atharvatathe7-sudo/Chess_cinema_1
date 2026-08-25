@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { assertValidTimeline } from '../timeline/invariants';
 import type { MoveBeat } from '../timeline/types';
+import { resolveCamera } from '../render/resolveCamera';
+import type { CameraDirective } from './types';
 import { buildCinematicPlan } from './buildCinematicPlan';
-import { lowerToTimeline } from './lowerToTimeline';
+import { buildCameraPlan, lowerToTimeline } from './lowerToTimeline';
 import { prunedPlyScenario, quietGameScenario, richMateEndingScenario, zeroMoveScenario } from './directorFixtures';
 import { DEFAULT_DIRECTOR_SETTINGS } from './types';
 
@@ -167,5 +169,118 @@ describe('lowerToTimeline', () => {
       centerY: 4,
       zoom: 1
     });
+  });
+
+  it('threads preClimaxRampMs through the real buildCinematicPlan -> lowerToTimeline pipeline correctly', () => {
+    const { game, analysis, understanding, story } = richMateEndingScenario();
+    const plan = buildCinematicPlan(game, analysis, understanding, story);
+    const timeline = lowerToTimeline(game, plan);
+    const keyframes = timeline.scenes[0]!.cameraPlan.keyframes;
+    const climaxKeyframe = keyframes.find((k) => k.zoom === DEFAULT_DIRECTOR_SETTINGS.climaxZoom);
+    expect(climaxKeyframe).toBeDefined();
+    const climaxAtMs = climaxKeyframe!.atMs;
+    const rampStartMs = Math.max(0, climaxAtMs - DEFAULT_DIRECTOR_SETTINGS.preClimaxRampMs);
+    if (rampStartMs > 0) {
+      expect(keyframes.some((k) => k.atMs === rampStartMs && k.zoom === 1 && k.centerX === 4 && k.centerY === 4)).toBe(true);
+    } else {
+      // Short-gap case: the base keyframe (atMs=0) already covers this — no separate ramp-start keyframe is needed or inserted.
+      expect(keyframes.filter((k) => k.zoom === 1 && k.atMs > 0 && k.atMs < climaxAtMs)).toHaveLength(0);
+    }
+  });
+});
+
+/**
+ * Phase 12B — direct unit coverage for buildCameraPlan's own pre-climax
+ * ramp logic, using hand-crafted inputs (including the real Scholar's
+ * Mate/Evergreen atMs/durationMs/sceneDurationMs values established in the
+ * Phase 12 investigation) so exact keyframe values can be pinned precisely,
+ * independent of any fixture's own particular climax timing.
+ */
+describe('buildCameraPlan — Phase 12B pre-climax ramp', () => {
+  const CLIMAX_ZOOM = DEFAULT_DIRECTOR_SETTINGS.climaxZoom;
+  const RAMP_MS = DEFAULT_DIRECTOR_SETTINGS.preClimaxRampMs;
+
+  function singleDirective(atPly: number): readonly CameraDirective[] {
+    return [{ atPly, focus: 'square-pair', squares: ['e4', 'e5'], evidenceRef: { kind: 'beat', id: 'beat-test' } }];
+  }
+
+  it('DEFAULT_DIRECTOR_SETTINGS.preClimaxRampMs defaults to 1200', () => {
+    expect(DEFAULT_DIRECTOR_SETTINGS.preClimaxRampMs).toBe(1200);
+  });
+
+  it("short-gap (Scholar's-Mate-shaped: climaxAtMs=1200, the real game's own value): no ramp-start keyframe is inserted, and the plan is byte-identical to the pre-Phase-12B 4-keyframe shape", () => {
+    const climaxAtMs = 1200; // Scholar's Mate's own real climax atMs
+    const durationMs = 2100; // Scholar's Mate's own real climax ply duration
+    const sceneDurationMs = 3600; // Scholar's Mate's own real scene duration
+    const plyAtMs = new Map([[6, climaxAtMs]]);
+    const plyDurationMs = new Map([[6, durationMs]]);
+
+    const plan = buildCameraPlan(singleDirective(6), plyAtMs, plyDurationMs, sceneDurationMs, CLIMAX_ZOOM, RAMP_MS);
+
+    expect(plan.keyframes).toHaveLength(4);
+    expect(plan.keyframes[0]).toEqual({ atMs: 0, centerX: 4, centerY: 4, zoom: 1 });
+    expect(plan.keyframes[1]!.atMs).toBe(climaxAtMs);
+    expect(plan.keyframes[1]!.zoom).toBe(CLIMAX_ZOOM);
+    expect(plan.keyframes[2]).toEqual({ ...plan.keyframes[1]!, atMs: climaxAtMs + durationMs });
+    expect(plan.keyframes[3]).toEqual({ atMs: sceneDurationMs, centerX: 4, centerY: 4, zoom: 1 });
+  });
+
+  it('long-gap (Evergreen-shaped: climaxAtMs=12850, the real game\'s own value): exactly one ramp-start keyframe is inserted at climaxAtMs - preClimaxRampMs, and every existing keyframe keeps its exact pre-Phase-12B value', () => {
+    const climaxAtMs = 12850; // Evergreen's own real climax atMs
+    const durationMs = 2100; // Evergreen's own real climax ply duration
+    const sceneDurationMs = 17050; // Evergreen's own real scene duration
+    const plyAtMs = new Map([[40, climaxAtMs]]);
+    const plyDurationMs = new Map([[40, durationMs]]);
+
+    const plan = buildCameraPlan(singleDirective(40), plyAtMs, plyDurationMs, sceneDurationMs, CLIMAX_ZOOM, RAMP_MS);
+
+    expect(plan.keyframes).toHaveLength(5);
+    expect(plan.keyframes[0]).toEqual({ atMs: 0, centerX: 4, centerY: 4, zoom: 1 });
+
+    // The new ramp-start keyframe: exactly climaxAtMs - preClimaxRampMs, full-board framing.
+    expect(plan.keyframes[1]).toEqual({ atMs: climaxAtMs - RAMP_MS, centerX: 4, centerY: 4, zoom: 1 });
+
+    // Existing climax-start keyframe unchanged.
+    expect(plan.keyframes[2]!.atMs).toBe(climaxAtMs);
+    expect(plan.keyframes[2]!.zoom).toBe(CLIMAX_ZOOM);
+
+    // Existing climax-hold keyframe unchanged.
+    expect(plan.keyframes[3]).toEqual({ ...plan.keyframes[2]!, atMs: climaxAtMs + durationMs });
+
+    // Existing final reset keyframe unchanged.
+    expect(plan.keyframes[4]).toEqual({ atMs: sceneDurationMs, centerX: 4, centerY: 4, zoom: 1 });
+  });
+
+  it('does not create a duplicate/degenerate keyframe when rampStartMs computes to exactly 0', () => {
+    const climaxAtMs = RAMP_MS; // climaxAtMs - preClimaxRampMs === 0 exactly
+    const plyAtMs = new Map([[6, climaxAtMs]]);
+    const plyDurationMs = new Map([[6, 300]]);
+    const plan = buildCameraPlan(singleDirective(6), plyAtMs, plyDurationMs, climaxAtMs + 300, CLIMAX_ZOOM, RAMP_MS);
+    expect(plan.keyframes.filter((k) => k.atMs === 0)).toHaveLength(1);
+    expect(plan.keyframes).toHaveLength(4);
+  });
+
+  it('the camera trajectory remains at zoom=1 for every time before the ramp-start keyframe', () => {
+    const climaxAtMs = 12850;
+    const plyAtMs = new Map([[40, climaxAtMs]]);
+    const plyDurationMs = new Map([[40, 2100]]);
+    const plan = buildCameraPlan(singleDirective(40), plyAtMs, plyDurationMs, 17050, CLIMAX_ZOOM, RAMP_MS);
+    const rampStartMs = climaxAtMs - RAMP_MS;
+
+    for (const t of [0, 1000, rampStartMs / 2, rampStartMs - 1]) {
+      expect(resolveCamera(plan, t).zoom).toBe(1);
+    }
+  });
+
+  it('camera zoom begins increasing only inside the final preClimaxRampMs before the climax, and reaches exactly climaxZoom at the climax itself', () => {
+    const climaxAtMs = 12850;
+    const plyAtMs = new Map([[40, climaxAtMs]]);
+    const plyDurationMs = new Map([[40, 2100]]);
+    const plan = buildCameraPlan(singleDirective(40), plyAtMs, plyDurationMs, 17050, CLIMAX_ZOOM, RAMP_MS);
+    const rampStartMs = climaxAtMs - RAMP_MS;
+
+    expect(resolveCamera(plan, rampStartMs).zoom).toBe(1);
+    expect(resolveCamera(plan, rampStartMs + 1).zoom).toBeGreaterThan(1);
+    expect(resolveCamera(plan, climaxAtMs).zoom).toBe(CLIMAX_ZOOM);
   });
 });

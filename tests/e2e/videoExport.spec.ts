@@ -116,7 +116,19 @@ test('Export Video produces a real, playable WebM for the Evergreen Game', async
   // slightly; this is checking "matches the cinematic plan", not
   // asserting frame-exact equality (that belongs to WebmMuxer.test.ts,
   // which checks the container bytes directly and deterministically).
-  const DURATION_TOLERANCE_SECONDS = 1;
+  //
+  // Phase 12A — the Evergreen Game ends in checkmate (24. Bxe7#), so
+  // export/runExport.ts now appends a fixed extra terminal-caption hold
+  // (1.5s) after the game's own natural end, extending real exported
+  // seconds beyond expectedDurationSeconds (read from the Timeline's own,
+  // unmodified scene.durationMs) — see export/runExport.ts's own
+  // TERMINAL_HOLD_MS and tests/e2e/terminalHold.spec.ts for dedicated
+  // coverage of that behavior. This test's own job is only "is this a
+  // normal, playable WebM", so the tolerance is simply widened by that
+  // same fixed amount rather than re-deriving TERMINAL_HOLD_MS's own value
+  // here.
+  const TERMINAL_HOLD_TOLERANCE_SECONDS = 1.5;
+  const DURATION_TOLERANCE_SECONDS = 1 + TERMINAL_HOLD_TOLERANCE_SECONDS;
   expect(Math.abs(metadata.duration - expectedDurationSeconds)).toBeLessThanOrEqual(DURATION_TOLERANCE_SECONDS);
 
   expect(consoleErrors).toEqual([]);

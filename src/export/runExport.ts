@@ -80,6 +80,73 @@ function hookFor(state: AppState): HookContent | null {
 }
 
 /**
+ * Phase 12A — a terminal-result caption (state/moments.ts's own
+ * terminal-result-highlight Moment) naturally dwells for only the final
+ * ply's own MoveBeat duration — as little as 300ms in every canonical
+ * terminal game (see the Phase 12 investigation) — because that beat is
+ * also the very last thing in the scene: there is no unused video time
+ * after it to redirect the caption into. The only way to give a viewer
+ * real time to read it without touching Director/story pacing (protected,
+ * and any change there would ripple through every other Moment's timing)
+ * is to export MORE frames than the scene itself contains, holding on the
+ * scene's own final frame for a fixed extra duration.
+ *
+ * 1500ms — matches DEFAULT_DIRECTOR_SETTINGS's own heldMultiplier(2.5) *
+ * baseMoveDurationMs(600) elsewhere in this system (director/types.ts,
+ * read only for this reasoning, not imported or depended on here — see
+ * the module comment above on restatement-over-coupling precedent this
+ * project already established in drawHook.ts): the same order of
+ * magnitude this codebase already treats as "long enough to register as a
+ * deliberately held, important beat," reused here as an independent,
+ * export-layer-only constant rather than a new dependency on director/*.
+ */
+export const TERMINAL_HOLD_MS = 1500;
+
+/**
+ * Pure: number of extra frames to append after the scene's own natural
+ * frame count. Zero unless the chronologically LAST Moment is a
+ * terminal-result-highlight — i.e. the exported game actually ended in
+ * checkmate/stalemate/draw. Promotion race's own last (and only) Moment is
+ * archetype-track (its final analyzed position is never terminal — see
+ * drawHook.ts's own selectHook reasoning); Quiet has no Moments at all;
+ * both correctly get 0 extra frames, unchanged from today. Checking the
+ * *last* Moment's kind (rather than searching for any terminal-result-
+ * highlight Moment) is still correct even in the hypothetical case — not
+ * reached by any canonical game today — where the terminal directive gets
+ * merged into an earlier-starting Moment group: state/moments.ts's own
+ * KIND_PRIORITY ranks terminal-result-highlight above every other kind, so
+ * a merged group containing it always reports that kind as the Moment's
+ * own `kind` (read only here, not modified).
+ */
+export function terminalHoldFrameCount(moments: readonly CinematicMoment[], fps: number): number {
+  const last = moments[moments.length - 1];
+  if (!last || last.kind !== 'terminal-result-highlight') return 0;
+  return frameCount(TERMINAL_HOLD_MS, fps);
+}
+
+/**
+ * The logical time every held frame renders at. scene.durationMs itself is
+ * the terminal Moment's own EXCLUSIVE untilMs (state/moments.ts's
+ * deriveCinematicMoments) — drawCaptions.ts's activeMomentAt requires
+ * logicalTimeMs < untilMs, so freezing exactly at scene.durationMs would
+ * silently make the caption disappear for every held frame. One
+ * millisecond earlier is still safely inside the terminal Moment's own
+ * window (its dwell is always at least one MoveBeat, at minimum 300ms in
+ * every canonical case) — and, confirmed against real exported frames from
+ * all three terminal canonical games during the Phase 12 investigation, is
+ * already extremely close to where render/resolveCamera.ts's own eased
+ * post-climax zoom-out naturally lands (>99.9% of the way back to the
+ * reset keyframe's zoom=1, full-board framing) by construction: this
+ * freeze time is not a new or different camera state, it is the same
+ * final, fully-revealed board position the export already settles on at
+ * its own natural last frame today — held for longer, with no change to
+ * camera mathematics at all.
+ */
+export function terminalHoldFreezeTimeMs(sceneDurationMs: number): number {
+  return Math.max(0, sceneDurationMs - 1);
+}
+
+/**
  * Drives frame production and encoding with backpressure. Exactly one
  * frame is rendered into a single reused OffscreenCanvas, handed to the
  * encoder, and awaited before the next frame is rendered — no array of
@@ -99,11 +166,6 @@ export async function runExport(
   }
 
   const total = frameCount(scene.durationMs, opts.fps);
-  await encoder.start({ width: opts.dims.width, height: opts.dims.height, fps: opts.fps });
-
-  const canvas = new OffscreenCanvas(opts.dims.width, opts.dims.height);
-  const ctx = canvas.getContext('2d');
-  if (!ctx) throw new Error('runExport: could not acquire a 2D context on OffscreenCanvas');
 
   // Computed once, outside the frame loop — deriveCinematicMoments is pure
   // and its inputs don't change frame to frame. Phase 6: burns the same
@@ -118,14 +180,34 @@ export async function runExport(
   // evaluation) don't change frame to frame either. null when opts.hook
   // isn't set, so the PNG-sequence export path never derives a hook at all.
   const hook = opts.hook ? hookFor(state) : null;
+  // Phase 12A — depends only on `moments`, which is already empty whenever
+  // opts.captions isn't set, so this is 0 for the PNG-sequence export path
+  // by construction, with no separate opt-in flag needed.
+  const holdFrames = terminalHoldFrameCount(moments, opts.fps);
+  const totalWithHold = total + holdFrames;
+  const freezeTimeMs = terminalHoldFreezeTimeMs(scene.durationMs);
 
-  for (let frameIndex = 0; frameIndex < total; frameIndex++) {
-    const logicalTimeMs = frameIndexToTimeMs(frameIndex, opts.fps);
-    renderExportFrame(state, frameIndex, opts.fps, ctx, opts.dims, assets);
+  await encoder.start({ width: opts.dims.width, height: opts.dims.height, fps: opts.fps });
+
+  const canvas = new OffscreenCanvas(opts.dims.width, opts.dims.height);
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('runExport: could not acquire a 2D context on OffscreenCanvas');
+
+  for (let frameIndex = 0; frameIndex < totalWithHold; frameIndex++) {
+    const isHeldFrame = frameIndex >= total;
+    const logicalTimeMs = isHeldFrame ? freezeTimeMs : frameIndexToTimeMs(frameIndex, opts.fps);
+    if (isHeldFrame) {
+      // Same render() call renderExportFrame wraps, but at the fixed
+      // freeze time rather than one derived from frameIndex — every held
+      // frame renders the identical, deterministic final frame.
+      render(state, logicalTimeMs, ctx, opts.dims, assets);
+    } else {
+      renderExportFrame(state, frameIndex, opts.fps, ctx, opts.dims, assets);
+    }
     if (opts.captions) drawCaptions(ctx, moments, logicalTimeMs, opts.dims);
     if (opts.hook) drawHook(ctx, hook, logicalTimeMs, opts.dims);
     await encoder.addFrame(canvas, frameIndex);
-    opts.onProgress?.(frameIndex + 1, total);
+    opts.onProgress?.(frameIndex + 1, totalWithHold);
   }
 
   return encoder.finish();

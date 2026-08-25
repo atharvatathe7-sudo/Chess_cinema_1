@@ -93,6 +93,21 @@ export interface DirectorSettings {
   readonly beatBoundaryPauseMs: number;
   /** > 1. Applied uniformly at the one v1 camera move (the climax zoom). */
   readonly climaxZoom: number;
+  /**
+   * Phase 12B — how long, immediately before the climax ply, the camera's
+   * eased zoom-in ramp is allowed to run. Camera zoom used to start easing
+   * toward climaxZoom from t=0 across the entire pre-climax portion of the
+   * video, so easeOutCubic's own front-loaded shape (render/resolveCamera.ts,
+   * unchanged) meant the camera was already sitting near-fully zoomed in —
+   * and visually static — for a long stretch before the climax actually
+   * happened (see the Phase 12 investigation's own zoom-curve quantification:
+   * >99% zoomed by 78.5% of the way through the gap, regardless of gap
+   * length). Compressing the ramp into a short, fixed window right before
+   * the climax makes the zoom read as an arrival at the climax rather than
+   * a long prior hold, without touching the easing function or any other
+   * segment of the camera plan.
+   */
+  readonly preClimaxRampMs: number;
 }
 
 export const DEFAULT_DIRECTOR_SETTINGS: DirectorSettings = {
@@ -102,7 +117,8 @@ export const DEFAULT_DIRECTOR_SETTINGS: DirectorSettings = {
   theoryMultiplier: 0.25,
   explanationOpportunityBonusMultiplier: 1.4,
   beatBoundaryPauseMs: 400,
-  climaxZoom: 1.8
+  climaxZoom: 1.8,
+  preClimaxRampMs: 1200
 };
 
 // ============================================================

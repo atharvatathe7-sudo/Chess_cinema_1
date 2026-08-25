@@ -115,12 +115,13 @@ function buildAnnotationBeats(
 
 const BASE_CAMERA_KEYFRAME: CameraKeyframe = { atMs: 0, centerX: 4, centerY: 4, zoom: 1 };
 
-function buildCameraPlan(
+export function buildCameraPlan(
   directives: readonly CameraDirective[],
   plyAtMs: ReadonlyMap<number, number>,
   plyDurationMs: ReadonlyMap<number, number>,
   sceneDurationMs: number,
-  climaxZoom: number
+  climaxZoom: number,
+  preClimaxRampMs: number
 ): CameraPlan {
   if (directives.length === 0) {
     return { keyframes: [BASE_CAMERA_KEYFRAME] };
@@ -135,6 +136,20 @@ function buildCameraPlan(
     const centers = directive.squares.map((sq) => squareCenter(sq, false));
     const centerX = centers.reduce((sum, c) => sum + c.x, 0) / centers.length;
     const centerY = centers.reduce((sum, c) => sum + c.y, 0) / centers.length;
+
+    // Phase 12B — hold at the base full-board framing until shortly before
+    // the climax, so easeOutCubic's own eased ramp (render/resolveCamera.ts,
+    // unchanged) is compressed into a short, fixed window immediately
+    // preceding the climax rather than spread across the entire pre-climax
+    // portion of the video. Omitted entirely (rampStartMs <= 0) whenever the
+    // climax happens sooner than preClimaxRampMs into the video — the ramp
+    // then simply uses however much time is already available between the
+    // base keyframe and the climax keyframe, identical to pre-Phase-12B
+    // behavior for every such game (e.g. Scholar's Mate).
+    const rampStartMs = Math.max(0, atMs - preClimaxRampMs);
+    if (rampStartMs > 0) {
+      keyframes.push({ atMs: rampStartMs, centerX: 4, centerY: 4, zoom: 1 });
+    }
 
     // Zoom in, then hold at the same values through this ply's own dwell
     // time — two identical-value keyframes at different atMs create a
@@ -167,7 +182,7 @@ export function lowerToTimeline(game: GameRecord, plan: CinematicPlan): Timeline
 
   const { beats: moveBeats, plyAtMs, plyDurationMs, totalMs } = buildMoveBeats(game, plan);
   const annotationBeats = buildAnnotationBeats(plan.annotationDirectives, plyAtMs, plyDurationMs);
-  const cameraPlan = buildCameraPlan(plan.cameraDirectives, plyAtMs, plyDurationMs, totalMs, plan.settings.climaxZoom);
+  const cameraPlan = buildCameraPlan(plan.cameraDirectives, plyAtMs, plyDurationMs, totalMs, plan.settings.climaxZoom, plan.settings.preClimaxRampMs);
 
   const scene: Scene = {
     id: SCENE_ID,

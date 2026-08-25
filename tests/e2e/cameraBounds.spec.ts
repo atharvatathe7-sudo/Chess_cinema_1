@@ -41,9 +41,29 @@ import { expect, test, type Page } from '@playwright/test';
  * real pre-fix/post-fix frame comparison at this exact fraction, and a
  * stability sweep across fractions 0.3-0.7) to sit inside the camera's
  * zoom-hold window, where the black bar genuinely existed pre-fix.
+ *
+ * Phase 9 — "Export Video" now renders at a fixed 1080x1920 portrait size
+ * (ui/panel.ts's VIDEO_EXPORT_DIMS). The RIGHT edge (used by the Promotion
+ * race test) needs no change: computeViewport's xOffset is always exactly 0
+ * in portrait orientation (width is always the constraining dimension,
+ * regardless of zoom — see render/coords.test.ts's "Phase 9" describe
+ * block), so the frame's own right edge already coincides with the board's
+ * right edge, same as it did at square dims. The TOP edge (Scholar's
+ * Mate/Stalemate) does need one: yOffset is 420px in portrait orientation
+ * (not 0), so the frame's literal top 10 rows are now *correctly* deep
+ * inside the letterbox band below the top of the board (see
+ * render/Renderer.ts's Phase 9 clip) regardless of whether this fix's own
+ * clamp is working — sampling row 0 there would prove nothing about the
+ * clamp anymore. BOARD_TOP anchors the same 10-row sample to the board's
+ * own top pixel edge instead, where the original defect (and this fix)
+ * actually live. tests/e2e/portraitExport.spec.ts separately re-verifies
+ * this same clamp guarantee, generically, across all 5 canonical games.
  */
 
 test.describe.configure({ timeout: 180_000 });
+
+/** yOffset for the app's real 1080x1920 video-export RenderDims at any zoom — see the Phase 9 module-comment note above and render/coords.test.ts's "xOffset/yOffset are invariant to zoom in portrait dims" case for the derivation. */
+const BOARD_TOP = 420;
 
 const SCHOLARS_MATE = '1. e4 e5 2. Bc4 Bc5 3. Qh5 Nf6 4. Qxf7#';
 const STALEMATE = '1. e3 a5 2. Qh5 Ra6 3. Qxa5 h5 4. Qxc7 Rah6 5. h4 f6 6. Qxd7+ Kf7 7. Qxb7 Qd3 8. Qxb8 Qh7 9. Qxc8 Kg6 10. Qe6';
@@ -97,11 +117,11 @@ interface EdgeReadout {
   readonly rightColsAvgLuminance: number;
 }
 
-/** Decodes one real, played-back frame of a real WebM at timeSec (same technique already established in tests/e2e/videoExport.spec.ts and captions.spec.ts) and reads average luminance across the top 10 rows and right 10 columns — the two edges affected across these three games. */
+/** Decodes one real, played-back frame of a real WebM at timeSec (same technique already established in tests/e2e/videoExport.spec.ts and captions.spec.ts) and reads average luminance across 10 rows starting at BOARD_TOP (the board's own top pixel edge — see this file's Phase 9 module-comment note) and the right 10 columns — the two edges affected across these three games. */
 async function decodeEdgeLuminance(page: Page, webmBytes: Buffer, timeSec: number): Promise<EdgeReadout> {
   const base64 = webmBytes.toString('base64');
   return page.evaluate(
-    async ({ b64, t }) => {
+    async ({ b64, t, topRowStart }) => {
       const binary = atob(b64);
       const bytes = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
@@ -140,7 +160,7 @@ async function decodeEdgeLuminance(page: Page, webmBytes: Buffer, timeSec: numbe
 
         let topSum = 0;
         let topCount = 0;
-        for (let y = 0; y < 10; y++) {
+        for (let y = topRowStart; y < topRowStart + 10; y++) {
           for (let x = 0; x < canvas.width; x++) {
             const i = (y * canvas.width + x) * 4;
             topSum += luminance(data[i]!, data[i + 1]!, data[i + 2]!);
@@ -169,7 +189,7 @@ async function decodeEdgeLuminance(page: Page, webmBytes: Buffer, timeSec: numbe
         video.remove();
       }
     },
-    { b64: base64, t: timeSec }
+    { b64: base64, t: timeSec, topRowStart: BOARD_TOP }
   );
 }
 
@@ -183,7 +203,7 @@ async function decodeEdgeLuminance(page: Page, webmBytes: Buffer, timeSec: numbe
 async function decodeEdgeLuminanceAtFraction(page: Page, webmBytes: Buffer, fraction: number): Promise<EdgeReadout> {
   const base64 = webmBytes.toString('base64');
   return page.evaluate(
-    async ({ b64, frac }) => {
+    async ({ b64, frac, topRowStart }) => {
       const binary = atob(b64);
       const bytes = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
@@ -222,7 +242,7 @@ async function decodeEdgeLuminanceAtFraction(page: Page, webmBytes: Buffer, frac
 
         let topSum = 0;
         let topCount = 0;
-        for (let y = 0; y < 10; y++) {
+        for (let y = topRowStart; y < topRowStart + 10; y++) {
           for (let x = 0; x < canvas.width; x++) {
             const i = (y * canvas.width + x) * 4;
             topSum += luminance(data[i]!, data[i + 1]!, data[i + 2]!);
@@ -251,7 +271,7 @@ async function decodeEdgeLuminanceAtFraction(page: Page, webmBytes: Buffer, frac
         video.remove();
       }
     },
-    { b64: base64, frac: fraction }
+    { b64: base64, frac: fraction, topRowStart: BOARD_TOP }
   );
 }
 
@@ -275,9 +295,9 @@ test("Scholar's Mate: the previously-black top edge is now real board content du
   const webmBytes = await exportVideoBytes(page);
   const readout = await decodeEdgeLuminance(page, webmBytes, climaxSeconds);
 
-  expect(readout.width).toBe(480);
-  expect(readout.height).toBe(480);
-  expect(readout.topRowsAvgLuminance, 'top rows should no longer be a black bar').toBeGreaterThan(NOT_BLACK_THRESHOLD);
+  expect(readout.width).toBe(1080);
+  expect(readout.height).toBe(1920);
+  expect(readout.topRowsAvgLuminance, 'the board\'s own top edge (BOARD_TOP) should no longer be a black bar').toBeGreaterThan(NOT_BLACK_THRESHOLD);
 
   expect(consoleErrors).toEqual([]);
   expect(pageErrors).toEqual([]);

@@ -61,12 +61,55 @@ interface Viewport {
   yOffset: number;
 }
 
-/** How a Camera maps the 8-unit board space onto pixel dims, letterboxed if dims isn't square. */
+const BOARD_SIZE = 8;
+
+/**
+ * Phase 7B — keeps a zoomed viewport's center from placing any part of the
+ * visible window outside the board's own [0, boardSize] extent. Without
+ * this, a Camera centered near an edge/corner (e.g. a climax square-pair
+ * mean close to a1/h8) produces a left/top that pushes part of the frame
+ * off-board; nothing ever paints there (drawBoard/drawPieces/
+ * drawAnnotations only ever draw the real 0..7 squares), so that region
+ * stays whatever render()'s own clearRect left it — which composites to a
+ * solid black bar once encoded to VP9 (no alpha channel). See the Phase 7A
+ * investigation for the full derivation and real-game verification.
+ *
+ * At zoom >= 1 (the only range this codebase ever produces — climaxZoom is
+ * required > 1 and easeOutCubic-eased interpolation between two zoom
+ * values >= 1 stays >= 1), this reduces to clamping into
+ * [visibleUnits/2, boardSize - visibleUnits/2]. The min/max form also
+ * degrades sensibly for a hypothetical zoom < 1 (viewport wider than the
+ * board — no placement can avoid letterboxing there, so this clamps
+ * toward centering instead of an inverted range). At zoom === 1 exactly,
+ * the valid range collapses to the single point {boardSize / 2} — this is
+ * why it's a true no-op for the existing base keyframe (always centered at
+ * (4, 4)) and for the zoom=1 fixed-camera case already covered by
+ * coords.test.ts.
+ */
+function clampCenter(center: number, visibleUnits: number, boardSize: number = BOARD_SIZE): number {
+  const half = visibleUnits / 2;
+  const lo = Math.min(half, boardSize - half);
+  const hi = Math.max(half, boardSize - half);
+  return Math.min(hi, Math.max(lo, center));
+}
+
+/**
+ * How a Camera maps the 8-unit board space onto pixel dims, letterboxed if
+ * dims isn't square. centerX/centerY are clamped here (not in
+ * resolveCamera.ts or wherever a Camera is produced) because this is the
+ * one place zoom and center are combined into a screen-space rectangle —
+ * every board-space-to-pixel call (boardToPixel, and therefore
+ * drawBoard/drawPieces/drawAnnotations) already routes through here, so a
+ * single clamp fixes all of them. camera.zoom itself, and every other
+ * field of the returned Viewport's derivation, is unchanged by this.
+ */
 export function computeViewport(camera: Camera, dims: RenderDims): Viewport {
-  const visibleUnits = 8 / camera.zoom;
+  const visibleUnits = BOARD_SIZE / camera.zoom;
   const scale = Math.min(dims.width, dims.height) / visibleUnits;
-  const left = camera.centerX - visibleUnits / 2;
-  const top = camera.centerY - visibleUnits / 2;
+  const clampedCenterX = clampCenter(camera.centerX, visibleUnits);
+  const clampedCenterY = clampCenter(camera.centerY, visibleUnits);
+  const left = clampedCenterX - visibleUnits / 2;
+  const top = clampedCenterY - visibleUnits / 2;
   const xOffset = (dims.width - visibleUnits * scale) / 2;
   const yOffset = (dims.height - visibleUnits * scale) / 2;
   return { scale, left, top, xOffset, yOffset };

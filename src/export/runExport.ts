@@ -5,6 +5,7 @@ import { render } from '../render/Renderer';
 import { deriveCinematicMoments, type CinematicMoment } from '../state/moments';
 import { frameCount, frameIndexToTimeMs } from './FrameSource';
 import { drawCaptions } from './drawCaptions';
+import { drawHook, selectHook, type HookContent } from './drawHook';
 import type { Encoder } from './Encoder';
 
 /**
@@ -40,6 +41,13 @@ export interface RunExportOptions {
    * sets this true.
    */
   captions?: boolean;
+  /**
+   * Phase 11 — burns a deterministic opening title card into the top
+   * portrait letterbox. Explicit opt-in, same convention as `captions`:
+   * only ui/panel.ts's video-export call site sets this true, so the
+   * PNG-sequence export path never derives or draws a hook at all.
+   */
+  hook?: boolean;
 }
 
 /**
@@ -56,6 +64,19 @@ function momentsFor(state: AppState): readonly CinematicMoment[] {
   if (!state.game || !state.analysis.result || !state.direction.result) return [];
   const { cinematicPlan, understanding, story } = state.direction.result;
   return deriveCinematicMoments(cinematicPlan, state.game.timeline, state.analysis.result, understanding, story);
+}
+
+/**
+ * Phase 11 — mirrors momentsFor's own guard exactly: a completed analysis
+ * and cinematic direction run are both required (selectHook reads
+ * story.archetypeSignals and analysis.plies), and are both legitimately
+ * absent in the same pre-"Generate Cinematic" case momentsFor already
+ * handles — safely no hook rather than a failed export.
+ */
+function hookFor(state: AppState): HookContent | null {
+  if (!state.game || !state.analysis.result || !state.direction.result) return null;
+  const { story } = state.direction.result;
+  return selectHook(story, state.analysis.result);
 }
 
 /**
@@ -92,11 +113,17 @@ export async function runExport(
   // set, so the PNG-sequence export path never pays even the cost of
   // deriving Moments, let alone drawing them.
   const moments = opts.captions ? momentsFor(state) : [];
+  // Same once-outside-the-loop reasoning as `moments` above — selectHook is
+  // pure and its inputs (story.archetypeSignals, the final ply's own
+  // evaluation) don't change frame to frame either. null when opts.hook
+  // isn't set, so the PNG-sequence export path never derives a hook at all.
+  const hook = opts.hook ? hookFor(state) : null;
 
   for (let frameIndex = 0; frameIndex < total; frameIndex++) {
     const logicalTimeMs = frameIndexToTimeMs(frameIndex, opts.fps);
     renderExportFrame(state, frameIndex, opts.fps, ctx, opts.dims, assets);
     if (opts.captions) drawCaptions(ctx, moments, logicalTimeMs, opts.dims);
+    if (opts.hook) drawHook(ctx, hook, logicalTimeMs, opts.dims);
     await encoder.addFrame(canvas, frameIndex);
     opts.onProgress?.(frameIndex + 1, total);
   }

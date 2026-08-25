@@ -514,6 +514,7 @@ export function mountPanel(root: HTMLElement): void {
         fps: EXPORT_FPS,
         dims: VIDEO_EXPORT_DIMS,
         captions: true,
+        hook: true,
         onProgress: (done, total) => {
           exportProgress.textContent = `Exporting video… ${Math.round((done / total) * 100)}%`;
         }

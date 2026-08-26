@@ -135,6 +135,19 @@ export interface CinematicPlan {
   readonly annotationDirectives: readonly AnnotationDirective[];
   /** Ascending by beforePly. */
   readonly transitionDirectives: readonly TransitionDirective[];
+  /**
+   * Phase 13B — true exactly when the game's own final position is a
+   * genuine terminal result (checkmate/stalemate/draw): the same condition
+   * director/annotations.ts's terminalResultDirectives already uses
+   * (analysis.plies[last].evaluationAfter.kind === 'terminal'), restated
+   * here rather than re-derived, since buildCinematicPlan.ts already
+   * receives GameAnalysis and already computes this exact fact for
+   * annotationDirectives. Consumed only by lowerToTimeline.ts's
+   * buildCameraPlan, to re-engage the camera on the actual terminal move
+   * without threading GameAnalysis into director/camera.ts at all — see
+   * the Phase 13A design report.
+   */
+  readonly finalPositionIsTerminal: boolean;
   readonly settings: DirectorSettings;
 }
 

@@ -90,13 +90,28 @@ function buildTransitionDirectives(beats: readonly StoryBeat[], settings: Direct
   }));
 }
 
-function emptyPlan(settings: DirectorSettings): CinematicPlan {
+/**
+ * Phase 13B — true exactly when the game's own final position is a genuine
+ * terminal result (checkmate/stalemate/draw). Mirrors director/
+ * annotations.ts's own terminalResultDirectives condition exactly
+ * (analysis.plies[last].evaluationAfter.kind === 'terminal') rather than
+ * re-deriving a new terminal check — restated here because this file
+ * already has GameAnalysis in scope and already passes it to
+ * deriveAnnotationDirectives for the same purpose.
+ */
+function isTerminalPosition(analysis: GameAnalysis): boolean {
+  if (analysis.plies.length === 0) return false;
+  return analysis.plies[analysis.plies.length - 1]!.evaluationAfter.kind === 'terminal';
+}
+
+function emptyPlan(settings: DirectorSettings, analysis: GameAnalysis): CinematicPlan {
   return {
     schemaVersion: DIRECTOR_SCHEMA_VERSION,
     moveTreatmentPlan: [],
     cameraDirectives: [],
     annotationDirectives: [],
     transitionDirectives: [],
+    finalPositionIsTerminal: isTerminalPosition(analysis),
     settings
   };
 }
@@ -118,7 +133,7 @@ export function buildCinematicPlan(
   settings: DirectorSettings = DEFAULT_DIRECTOR_SETTINGS
 ): CinematicPlan {
   if (story.moveTreatment.length === 0) {
-    return emptyPlan(settings);
+    return emptyPlan(settings, analysis);
   }
 
   const explanationOpportunityPlies = new Set(story.explanationOpportunities.map((eo) => eo.ply));
@@ -137,6 +152,7 @@ export function buildCinematicPlan(
     cameraDirectives,
     annotationDirectives,
     transitionDirectives,
+    finalPositionIsTerminal: isTerminalPosition(analysis),
     settings
   };
 }

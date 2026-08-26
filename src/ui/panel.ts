@@ -25,6 +25,13 @@ const BOARD_VIEWPORT_FRACTION = 0.94;
 const EXPORT_FPS = 24;
 
 /**
+ * The panel container's own horizontal padding (each side) — read by both
+ * the template string below and the post-layout board-sizing correction,
+ * so the two never drift out of sync.
+ */
+const PANEL_PADDING_PX = 16;
+
+/**
  * Phase 9 — "Export Video" renders at a fixed 9:16 portrait size,
  * independent of the on-screen board's own square `dims` (derived below
  * from boardCssSize/devicePixelRatio). runExport.ts always builds a fresh
@@ -52,6 +59,10 @@ export function mountPanel(root: HTMLElement): void {
   const engine = new ChessJsEngine();
   const assets = new AssetManager<HTMLImageElement>(PIECE_MANIFEST, loadImage);
 
+  // A pre-layout estimate only — board-wrap's real size is corrected right
+  // after insertion below, once the panel container's actual available
+  // content width can be measured. Kept non-zero here purely so the first
+  // (synchronous, pre-paint) template render has a sane inline size.
   const boardCssSize = Math.min(window.innerWidth * BOARD_VIEWPORT_FRACTION, MAX_BOARD_SIZE);
 
   root.innerHTML = `
@@ -69,8 +80,8 @@ export function mountPanel(root: HTMLElement): void {
       .cc-btn:active { background: #e2e2e2; }
       .cc-btn:disabled { opacity: 0.45; }
     </style>
-    <div style="font-family:system-ui,sans-serif;max-width:560px;margin:0 auto;padding:16px;display:flex;flex-direction:column;gap:12px;box-sizing:border-box;">
-      <h1 style="font-size:16px;margin:0;">Chess Cinema — Phase 2.1</h1>
+    <div id="panel" style="font-family:system-ui,sans-serif;max-width:560px;margin:0 auto;padding:${PANEL_PADDING_PX}px;display:flex;flex-direction:column;gap:12px;box-sizing:border-box;">
+      <h1 style="font-size:16px;margin:0;">Chess Cinema</h1>
       <textarea id="pgn-input" rows="4" style="width:100%;box-sizing:border-box;" placeholder="Paste PGN here">1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 4. Ba4 Nf6 5. O-O Be7</textarea>
       <button id="load-btn" class="cc-btn">Load PGN</button>
       <div id="error" style="color:#b00020;"></div>
@@ -148,10 +159,27 @@ export function mountPanel(root: HTMLElement): void {
   const prevMomentBtn = root.querySelector<HTMLButtonElement>('#prev-moment-btn')!;
   const nextMomentBtn = root.querySelector<HTMLButtonElement>('#next-moment-btn')!;
   const momentsList = root.querySelector<HTMLUListElement>('#moments-list')!;
+  const panelEl = root.querySelector<HTMLDivElement>('#panel')!;
+  const boardWrapEl = root.querySelector<HTMLDivElement>('#board-wrap')!;
+
+  // Corrects the pre-layout estimate above against the panel's real,
+  // post-layout available content width (clientWidth already nets out the
+  // container's own box-sizing; its horizontal padding is subtracted here
+  // since board-wrap sits inside that padding, not outside it) — this is
+  // what actually fixes narrow-viewport overflow: window.innerWidth alone
+  // never accounted for the panel's padding, so on narrow viewports
+  // boardCssSize could exceed the space actually left for it. Still capped
+  // by the same BOARD_VIEWPORT_FRACTION/MAX_BOARD_SIZE as before, so
+  // desktop (where the panel is already pinned to its max-width) is
+  // unaffected — panel.clientWidth there is unchanged by this fix.
+  const availableContentWidth = panelEl.clientWidth - 2 * PANEL_PADDING_PX;
+  const correctedBoardCssSize = Math.min(availableContentWidth * BOARD_VIEWPORT_FRACTION, MAX_BOARD_SIZE);
+  boardWrapEl.style.width = `${correctedBoardCssSize}px`;
+  boardWrapEl.style.height = `${correctedBoardCssSize}px`;
 
   const dpr = window.devicePixelRatio || 1;
-  canvas.width = Math.round(boardCssSize * dpr);
-  canvas.height = Math.round(boardCssSize * dpr);
+  canvas.width = Math.round(correctedBoardCssSize * dpr);
+  canvas.height = Math.round(correctedBoardCssSize * dpr);
   const ctx = canvas.getContext('2d')!;
   const dims: RenderDims = { width: canvas.width, height: canvas.height };
 

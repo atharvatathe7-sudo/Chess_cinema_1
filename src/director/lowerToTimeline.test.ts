@@ -4,7 +4,7 @@ import type { MoveBeat } from '../timeline/types';
 import { resolveCamera } from '../render/resolveCamera';
 import type { CameraDirective } from './types';
 import { buildCinematicPlan } from './buildCinematicPlan';
-import { buildCameraPlan, lowerToTimeline } from './lowerToTimeline';
+import { buildCameraPlan, lowerToTimeline, TERMINAL_ZOOM_IN_MS, TERMINAL_ZOOM_OUT_MS } from './lowerToTimeline';
 import { prunedPlyScenario, quietGameScenario, richMateEndingScenario, zeroMoveScenario } from './directorFixtures';
 import { DEFAULT_DIRECTOR_SETTINGS } from './types';
 
@@ -215,7 +215,7 @@ describe('buildCameraPlan — Phase 12B pre-climax ramp', () => {
     const plyAtMs = new Map([[6, climaxAtMs]]);
     const plyDurationMs = new Map([[6, durationMs]]);
 
-    const plan = buildCameraPlan(singleDirective(6), plyAtMs, plyDurationMs, sceneDurationMs, CLIMAX_ZOOM, RAMP_MS);
+    const plan = buildCameraPlan(singleDirective(6), plyAtMs, plyDurationMs, sceneDurationMs, CLIMAX_ZOOM, RAMP_MS, null);
 
     expect(plan.keyframes).toHaveLength(4);
     expect(plan.keyframes[0]).toEqual({ atMs: 0, centerX: 4, centerY: 4, zoom: 1 });
@@ -232,7 +232,7 @@ describe('buildCameraPlan — Phase 12B pre-climax ramp', () => {
     const plyAtMs = new Map([[40, climaxAtMs]]);
     const plyDurationMs = new Map([[40, durationMs]]);
 
-    const plan = buildCameraPlan(singleDirective(40), plyAtMs, plyDurationMs, sceneDurationMs, CLIMAX_ZOOM, RAMP_MS);
+    const plan = buildCameraPlan(singleDirective(40), plyAtMs, plyDurationMs, sceneDurationMs, CLIMAX_ZOOM, RAMP_MS, null);
 
     expect(plan.keyframes).toHaveLength(5);
     expect(plan.keyframes[0]).toEqual({ atMs: 0, centerX: 4, centerY: 4, zoom: 1 });
@@ -255,7 +255,7 @@ describe('buildCameraPlan — Phase 12B pre-climax ramp', () => {
     const climaxAtMs = RAMP_MS; // climaxAtMs - preClimaxRampMs === 0 exactly
     const plyAtMs = new Map([[6, climaxAtMs]]);
     const plyDurationMs = new Map([[6, 300]]);
-    const plan = buildCameraPlan(singleDirective(6), plyAtMs, plyDurationMs, climaxAtMs + 300, CLIMAX_ZOOM, RAMP_MS);
+    const plan = buildCameraPlan(singleDirective(6), plyAtMs, plyDurationMs, climaxAtMs + 300, CLIMAX_ZOOM, RAMP_MS, null);
     expect(plan.keyframes.filter((k) => k.atMs === 0)).toHaveLength(1);
     expect(plan.keyframes).toHaveLength(4);
   });
@@ -264,7 +264,7 @@ describe('buildCameraPlan — Phase 12B pre-climax ramp', () => {
     const climaxAtMs = 12850;
     const plyAtMs = new Map([[40, climaxAtMs]]);
     const plyDurationMs = new Map([[40, 2100]]);
-    const plan = buildCameraPlan(singleDirective(40), plyAtMs, plyDurationMs, 17050, CLIMAX_ZOOM, RAMP_MS);
+    const plan = buildCameraPlan(singleDirective(40), plyAtMs, plyDurationMs, 17050, CLIMAX_ZOOM, RAMP_MS, null);
     const rampStartMs = climaxAtMs - RAMP_MS;
 
     for (const t of [0, 1000, rampStartMs / 2, rampStartMs - 1]) {
@@ -276,11 +276,203 @@ describe('buildCameraPlan — Phase 12B pre-climax ramp', () => {
     const climaxAtMs = 12850;
     const plyAtMs = new Map([[40, climaxAtMs]]);
     const plyDurationMs = new Map([[40, 2100]]);
-    const plan = buildCameraPlan(singleDirective(40), plyAtMs, plyDurationMs, 17050, CLIMAX_ZOOM, RAMP_MS);
+    const plan = buildCameraPlan(singleDirective(40), plyAtMs, plyDurationMs, 17050, CLIMAX_ZOOM, RAMP_MS, null);
     const rampStartMs = climaxAtMs - RAMP_MS;
 
     expect(resolveCamera(plan, rampStartMs).zoom).toBe(1);
     expect(resolveCamera(plan, rampStartMs + 1).zoom).toBeGreaterThan(1);
     expect(resolveCamera(plan, climaxAtMs).zoom).toBe(CLIMAX_ZOOM);
+  });
+});
+
+/**
+ * Phase 13B — direct unit coverage for buildCameraPlan's own terminal
+ * payoff re-engagement logic, using hand-crafted inputs mirroring the real
+ * Scholar's Mate/Evergreen/Stalemate/Promotion race atMs/durationMs/
+ * sceneDurationMs/terminal-ply values established in the Phase 13/13A
+ * investigation and design report, so exact keyframe values can be pinned
+ * precisely, independent of any fixture's own particular timing.
+ */
+describe('buildCameraPlan — Phase 13B terminal payoff', () => {
+  const CLIMAX_ZOOM = DEFAULT_DIRECTOR_SETTINGS.climaxZoom;
+  const RAMP_MS = DEFAULT_DIRECTOR_SETTINGS.preClimaxRampMs;
+
+  function singleDirective(atPly: number): readonly CameraDirective[] {
+    return [{ atPly, focus: 'square-pair', squares: ['e4', 'e5'], evidenceRef: { kind: 'beat', id: 'beat-test' } }];
+  }
+
+  function assertAscending(keyframes: readonly { atMs: number }[]): void {
+    for (let i = 1; i < keyframes.length; i++) {
+      expect(keyframes[i]!.atMs, `keyframe ${i} (${keyframes[i]!.atMs}) must be > keyframe ${i - 1} (${keyframes[i - 1]!.atMs})`).toBeGreaterThan(
+        keyframes[i - 1]!.atMs
+      );
+    }
+  }
+
+  it('TERMINAL_ZOOM_OUT_MS/TERMINAL_ZOOM_IN_MS are the approved, independent constants (200/400), not coupled to DEFAULT_DIRECTOR_SETTINGS', () => {
+    expect(TERMINAL_ZOOM_OUT_MS).toBe(200);
+    expect(TERMINAL_ZOOM_IN_MS).toBe(400);
+  });
+
+  it("Scholar's-Mate-shaped zero-gap case (climaxAtMs=1200, terminal ply begins exactly at the natural hold-end=3300): the SAME hold-end keyframe is extended to sceneDurationMs-TERMINAL_ZOOM_OUT_MS, with no separate re-engagement episode", () => {
+    const climaxAtMs = 1200;
+    const durationMs = 2100;
+    const sceneDurationMs = 3600;
+    const terminalPlyAtMs = 3300; // == climaxAtMs + durationMs, the real zero-gap case
+    const plyAtMs = new Map([[6, climaxAtMs]]);
+    const plyDurationMs = new Map([[6, durationMs]]);
+
+    const plan = buildCameraPlan(singleDirective(6), plyAtMs, plyDurationMs, sceneDurationMs, CLIMAX_ZOOM, RAMP_MS, terminalPlyAtMs);
+
+    expect(plan.keyframes).toEqual([
+      { atMs: 0, centerX: 4, centerY: 4, zoom: 1 },
+      { atMs: 1200, centerX: 4.5, centerY: 4, zoom: CLIMAX_ZOOM },
+      { atMs: 3400, centerX: 4.5, centerY: 4, zoom: CLIMAX_ZOOM },
+      { atMs: 3600, centerX: 4, centerY: 4, zoom: 1 }
+    ]);
+    assertAscending(plan.keyframes);
+  });
+
+  it('Evergreen-shaped gap case (climaxAtMs=12850, terminal ply begins at 16750, well after the natural hold-end=14950): the existing climax hold is left unchanged, and a short re-engagement episode is inserted around the terminal move', () => {
+    const climaxAtMs = 12850;
+    const durationMs = 2100;
+    const sceneDurationMs = 17050;
+    const terminalPlyAtMs = 16750;
+    const plyAtMs = new Map([[40, climaxAtMs]]);
+    const plyDurationMs = new Map([[40, durationMs]]);
+
+    const plan = buildCameraPlan(singleDirective(40), plyAtMs, plyDurationMs, sceneDurationMs, CLIMAX_ZOOM, RAMP_MS, terminalPlyAtMs);
+
+    const center = { centerX: 4.5, centerY: 4 }; // squareCenter('e4')/squareCenter('e5') averaged — see singleDirective
+    expect(plan.keyframes).toEqual([
+      { atMs: 0, centerX: 4, centerY: 4, zoom: 1 },
+      { atMs: 11650, centerX: 4, centerY: 4, zoom: 1 }, // Phase 12B ramp-start, unchanged
+      { atMs: 12850, ...center, zoom: CLIMAX_ZOOM }, // existing climax-start, unchanged
+      { atMs: 14950, ...center, zoom: CLIMAX_ZOOM }, // existing climax-hold-end, unchanged
+      { atMs: 16350, ...center, zoom: 1 }, // NEW: re-engagement reset (16750 - TERMINAL_ZOOM_IN_MS)
+      { atMs: 16750, ...center, zoom: CLIMAX_ZOOM }, // NEW: re-zoom completes as terminal ply begins
+      { atMs: 16850, ...center, zoom: CLIMAX_ZOOM }, // NEW: hold-end (sceneDurationMs - TERMINAL_ZOOM_OUT_MS)
+      { atMs: 17050, centerX: 4, centerY: 4, zoom: 1 } // existing final reset, unchanged
+    ]);
+    assertAscending(plan.keyframes);
+  });
+
+  it('Stalemate-shaped gap case (climaxAtMs=5600, terminal ply begins at 9500, well after the natural hold-end=7700): same re-engagement shape as Evergreen, different numbers', () => {
+    const climaxAtMs = 5600;
+    const durationMs = 2100;
+    const sceneDurationMs = 9800;
+    const terminalPlyAtMs = 9500;
+    const plyAtMs = new Map([[12, climaxAtMs]]);
+    const plyDurationMs = new Map([[12, durationMs]]);
+
+    const plan = buildCameraPlan(singleDirective(12), plyAtMs, plyDurationMs, sceneDurationMs, CLIMAX_ZOOM, RAMP_MS, terminalPlyAtMs);
+
+    const center = { centerX: 4.5, centerY: 4 }; // squareCenter('e4')/squareCenter('e5') averaged — see singleDirective
+    expect(plan.keyframes).toEqual([
+      { atMs: 0, centerX: 4, centerY: 4, zoom: 1 },
+      { atMs: 4400, centerX: 4, centerY: 4, zoom: 1 },
+      { atMs: 5600, ...center, zoom: CLIMAX_ZOOM },
+      { atMs: 7700, ...center, zoom: CLIMAX_ZOOM },
+      { atMs: 9100, ...center, zoom: 1 },
+      { atMs: 9500, ...center, zoom: CLIMAX_ZOOM },
+      { atMs: 9600, ...center, zoom: CLIMAX_ZOOM },
+      { atMs: 9800, centerX: 4, centerY: 4, zoom: 1 }
+    ]);
+    assertAscending(plan.keyframes);
+  });
+
+  it('Promotion-race-shaped non-terminal case (terminalPlyAtMs=null): byte-identical to the pre-Phase-13B/pre-existing Phase 12B shape — no terminal re-engagement is ever inserted', () => {
+    const climaxAtMs = 3100;
+    const durationMs = 2100;
+    const sceneDurationMs = 5800;
+    const plyAtMs = new Map([[8, climaxAtMs]]);
+    const plyDurationMs = new Map([[8, durationMs]]);
+
+    const plan = buildCameraPlan(singleDirective(8), plyAtMs, plyDurationMs, sceneDurationMs, CLIMAX_ZOOM, RAMP_MS, null);
+
+    expect(plan.keyframes).toEqual([
+      { atMs: 0, centerX: 4, centerY: 4, zoom: 1 },
+      { atMs: 1900, centerX: 4, centerY: 4, zoom: 1 },
+      { atMs: 3100, centerX: 4.5, centerY: 4, zoom: CLIMAX_ZOOM },
+      { atMs: 5200, centerX: 4.5, centerY: 4, zoom: CLIMAX_ZOOM },
+      { atMs: 5800, centerX: 4, centerY: 4, zoom: 1 }
+    ]);
+  });
+
+  it('Quiet-shaped case (no camera directive at all): remains the single static full-board keyframe regardless of terminalPlyAtMs', () => {
+    const plyAtMs = new Map<number, number>();
+    const plyDurationMs = new Map<number, number>();
+    const plan = buildCameraPlan([], plyAtMs, plyDurationMs, 2550, CLIMAX_ZOOM, RAMP_MS, 2250);
+    expect(plan.keyframes).toEqual([{ atMs: 0, centerX: 4, centerY: 4, zoom: 1 }]);
+  });
+
+  it('Phase 12A freeze-anchor preservation: resolveCamera(plan, sceneDurationMs - 1) resolves to zoom=1/center=(4,4) within 1e-6, for all three terminal shapes', () => {
+    const cases = [
+      { climaxAtMs: 1200, durationMs: 2100, sceneDurationMs: 3600, terminalPlyAtMs: 3300, ply: 6 },
+      { climaxAtMs: 12850, durationMs: 2100, sceneDurationMs: 17050, terminalPlyAtMs: 16750, ply: 40 },
+      { climaxAtMs: 5600, durationMs: 2100, sceneDurationMs: 9800, terminalPlyAtMs: 9500, ply: 12 }
+    ];
+    for (const c of cases) {
+      const plyAtMs = new Map([[c.ply, c.climaxAtMs]]);
+      const plyDurationMs = new Map([[c.ply, c.durationMs]]);
+      const plan = buildCameraPlan(singleDirective(c.ply), plyAtMs, plyDurationMs, c.sceneDurationMs, CLIMAX_ZOOM, RAMP_MS, c.terminalPlyAtMs);
+      const cam = resolveCamera(plan, c.sceneDurationMs - 1);
+      expect(Math.abs(cam.zoom - 1), `sceneDurationMs=${c.sceneDurationMs}: zoom`).toBeLessThan(1e-6);
+      expect(Math.abs(cam.centerX - 4), `sceneDurationMs=${c.sceneDurationMs}: centerX`).toBeLessThan(1e-6);
+      expect(Math.abs(cam.centerY - 4), `sceneDurationMs=${c.sceneDurationMs}: centerY`).toBeLessThan(1e-6);
+    }
+  });
+
+  it('camera remains meaningfully zoomed (> 1.5) for a real portion of the terminal ply, for all three terminal shapes', () => {
+    const cases = [
+      { climaxAtMs: 1200, durationMs: 2100, sceneDurationMs: 3600, terminalPlyAtMs: 3300, ply: 6 },
+      { climaxAtMs: 12850, durationMs: 2100, sceneDurationMs: 17050, terminalPlyAtMs: 16750, ply: 40 },
+      { climaxAtMs: 5600, durationMs: 2100, sceneDurationMs: 9800, terminalPlyAtMs: 9500, ply: 12 }
+    ];
+    for (const c of cases) {
+      const plyAtMs = new Map([[c.ply, c.climaxAtMs]]);
+      const plyDurationMs = new Map([[c.ply, c.durationMs]]);
+      const plan = buildCameraPlan(singleDirective(c.ply), plyAtMs, plyDurationMs, c.sceneDurationMs, CLIMAX_ZOOM, RAMP_MS, c.terminalPlyAtMs);
+      // Right at the terminal ply's own start, the camera must already be at full climaxZoom.
+      expect(resolveCamera(plan, c.terminalPlyAtMs).zoom).toBe(CLIMAX_ZOOM);
+      // And it must still be meaningfully zoomed 50ms into the terminal move.
+      expect(resolveCamera(plan, c.terminalPlyAtMs + 50).zoom).toBeGreaterThan(1.5);
+    }
+  });
+
+  it('small-gap edge case (gap between climax hold-end and terminal ply smaller than TERMINAL_ZOOM_IN_MS): no duplicate/conflicting-zoom keyframe is produced, and the camera simply stays held through the short gap', () => {
+    const climaxAtMs = 1200;
+    const durationMs = 2100; // natural hold-end = 3300
+    const terminalPlyAtMs = 3500; // only 200ms gap, less than TERMINAL_ZOOM_IN_MS (400)
+    const sceneDurationMs = 3800;
+    const plyAtMs = new Map([[6, climaxAtMs]]);
+    const plyDurationMs = new Map([[6, durationMs]]);
+
+    const plan = buildCameraPlan(singleDirective(6), plyAtMs, plyDurationMs, sceneDurationMs, CLIMAX_ZOOM, RAMP_MS, terminalPlyAtMs);
+
+    assertAscending(plan.keyframes);
+    // No keyframe pair shares an atMs.
+    const seen = new Set<number>();
+    for (const k of plan.keyframes) {
+      expect(seen.has(k.atMs), `duplicate atMs=${k.atMs}`).toBe(false);
+      seen.add(k.atMs);
+    }
+    // The camera stays at climaxZoom continuously from the climax hold straight through to the terminal ply.
+    expect(resolveCamera(plan, climaxAtMs + durationMs).zoom).toBe(CLIMAX_ZOOM);
+    expect(resolveCamera(plan, terminalPlyAtMs).zoom).toBe(CLIMAX_ZOOM);
+  });
+
+  it('unusually short terminal-ply-to-sceneDurationMs budget (less than TERMINAL_ZOOM_OUT_MS): falls back to holding through the terminal ply\'s own start rather than producing an out-of-order keyframe', () => {
+    const climaxAtMs = 1200;
+    const durationMs = 2100; // natural hold-end = 3300
+    const terminalPlyAtMs = 5000;
+    const sceneDurationMs = 5100; // only 100ms after terminalPlyAtMs, less than TERMINAL_ZOOM_OUT_MS (200)
+    const plyAtMs = new Map([[6, climaxAtMs]]);
+    const plyDurationMs = new Map([[6, durationMs]]);
+
+    const plan = buildCameraPlan(singleDirective(6), plyAtMs, plyDurationMs, sceneDurationMs, CLIMAX_ZOOM, RAMP_MS, terminalPlyAtMs);
+
+    assertAscending(plan.keyframes);
+    expect(plan.keyframes[plan.keyframes.length - 1]).toEqual({ atMs: sceneDurationMs, centerX: 4, centerY: 4, zoom: 1 });
   });
 });

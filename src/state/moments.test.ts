@@ -86,6 +86,7 @@ function cinematicPlan(annotationDirectives: readonly AnnotationDirective[]): Ci
     cameraDirectives: [],
     annotationDirectives,
     transitionDirectives: [],
+    finalPositionIsTerminal: false,
     settings: DEFAULT_DIRECTOR_SETTINGS
   };
 }

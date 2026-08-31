@@ -1,0 +1,105 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "chess-cinema/evaluation/label.schema.json",
+  "title": "Chess Cinema director evaluation label",
+  "description": "One human-labelled verdict about what the cinematic director chose for one game. Machine-derived fields are refreshed by buildLabels.mjs from the corpus capture; human fields are never overwritten by tooling.",
+  "type": "object",
+  "required": ["game_id", "status"],
+  "additionalProperties": false,
+  "properties": {
+    "game_id": {
+      "type": "string",
+      "description": "Stable id. For run games this is the PGN filename without extension."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["awaiting-pgn", "captured-unlabelled", "labelled"],
+      "description": "awaiting-pgn: known game, PGN not yet supplied, nothing captured. captured-unlabelled: pipeline output captured, human verdict still missing. labelled: a human has filled in the verdict fields."
+    },
+    "game_type": {
+      "type": ["string", "null"],
+      "enum": ["tactical", "king-hunt", "positional", "endgame", "stalemate", "promotion", "resignation", "high-rated", "amateur", "other", null],
+      "description": "Used by report.mjs to break failure patterns down by kind of game."
+    },
+    "rating_band": {
+      "type": ["string", "null"],
+      "enum": ["2500+", "2000-2499", "under-2000", "unknown", null]
+    },
+    "pgn_file": {
+      "type": ["string", "null"],
+      "description": "Repo-relative path to the .pgn, or null while status is awaiting-pgn."
+    },
+    "result": { "type": ["string", "null"], "description": "1-0 / 0-1 / 1/2-1/2 / *" },
+    "termination_type": {
+      "type": ["string", "null"],
+      "description": "checkmate / stalemate / resignation / draw-agreed / timeout / unterminated / other"
+    },
+
+    "actual_important_event": {
+      "type": ["string", "null"],
+      "description": "HUMAN. What actually mattered in this game, in your words. The ground truth the director is being graded against."
+    },
+    "missed_events": {
+      "type": ["array", "null"],
+      "items": { "type": "string" },
+      "description": "HUMAN. Things that mattered but the director did not surface at all."
+    },
+
+    "tool_selected_moments": {
+      "type": ["array", "null"],
+      "description": "MACHINE. Copied from the capture: the Moments the director actually chose.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "kind": { "type": "string" },
+          "label": { "type": "string" },
+          "toPly": { "type": "number" },
+          "toSan": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "tool_caption_text": {
+      "type": ["array", "null"],
+      "items": { "type": "string" },
+      "description": "MACHINE. Exactly the caption strings export/drawCaptions.ts burns into the video."
+    },
+    "tool_story_primary_ply": { "type": ["number", "null"], "description": "MACHINE. The ply the story layer called decisive." },
+    "tool_top_raw_swing_ply": { "type": ["number", "null"], "description": "MACHINE. The ply with the largest raw Stockfish evaluation swing." },
+    "tool_terminal_ply": { "type": ["number", "null"], "description": "MACHINE. The last played ply of the game." },
+    "tool_camera_focus_plies": { "type": ["array", "null"], "items": { "type": "number" }, "description": "MACHINE. Plies the camera zoomed on." },
+
+    "caption_correct": { "type": ["boolean", "null"], "description": "HUMAN. Did the caption text describe what really happened?" },
+    "camera_correct": { "type": ["boolean", "null"], "description": "HUMAN. Did the camera frame the right part of the board at the right time?" },
+    "sequence_correct": { "type": ["boolean", "null"], "description": "HUMAN. Was the multi-move sequence kept intact rather than collapsed to one move?" },
+    "causally_correct": { "type": ["boolean", "null"], "description": "HUMAN. Was the cause linked to its later effect (e.g. early blunder -> later mate)?" },
+
+    "verdict": {
+      "type": ["string", "null"],
+      "enum": ["correct", "partially correct", "wrong", null],
+      "description": "HUMAN. Overall judgement of the story the director told."
+    },
+    "failure_category": {
+      "type": ["string", "null"],
+      "enum": [
+        "evaluation-swing-mistaken-for-narrative",
+        "setup-move-chosen-over-payoff",
+        "causal-chain-missed",
+        "multi-move-sequence-collapsed-to-one-move",
+        "fabricated-significance",
+        "other",
+        null
+      ],
+      "description": "HUMAN. Null when verdict is 'correct'. 'other' requires failure_category_other."
+    },
+    "failure_category_other": {
+      "type": ["string", "null"],
+      "description": "HUMAN. Free text, only when failure_category is 'other'."
+    },
+    "notes": { "type": ["string", "null"], "description": "HUMAN. Anything else worth remembering about this game." },
+
+    "labelled_by": { "type": ["string", "null"] },
+    "labelled_at": { "type": ["string", "null"], "format": "date-time" },
+    "capture_file": { "type": ["string", "null"], "description": "MACHINE. Path of the capture JSON this record was refreshed from." },
+    "captured_at": { "type": ["string", "null"], "format": "date-time" }
+  }
+}

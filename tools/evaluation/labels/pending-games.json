@@ -1,0 +1,70 @@
+{
+  "comment": [
+    "Games named in the Phase-15 evaluation brief as already tested by hand, but whose PGN and recorded verdict have NOT been supplied to this tool yet.",
+    "They are listed here so the dataset and the failure report can honestly account for them as MISSING rather than silently under-reporting the corpus.",
+    "The 'description' field is a restatement of how the game was described in the brief. It is NOT a verdict and NOT a label — no verdict has been inferred, guessed, or back-filled by tooling.",
+    "To promote one of these to a real record: drop the .pgn into tools/evaluation/corpus/real/ named <game_id>.pgn, re-run runCorpus.mjs, then buildLabels.mjs, then fill in the human fields in labels.json."
+  ],
+  "games": [
+    {
+      "game_id": "real-king-hunt",
+      "game_type": "king-hunt",
+      "rating_band": "unknown",
+      "notes": "Described in brief as: king hunt game. Verdict not yet supplied."
+    },
+    {
+      "game_id": "real-smothered-mate",
+      "game_type": "tactical",
+      "rating_band": "unknown",
+      "notes": "Described in brief as: smothered-mate-type game. Verdict not yet supplied."
+    },
+    {
+      "game_id": "real-double-check-mate",
+      "game_type": "tactical",
+      "rating_band": "unknown",
+      "notes": "Described in brief as: double-check checkmate game; cited as a case where the actual payoff move was under-emphasised in favour of an earlier setup move. Verdict not yet supplied."
+    },
+    {
+      "game_id": "real-queen-blunder-after-king-hunt",
+      "game_type": "king-hunt",
+      "rating_band": "unknown",
+      "notes": "Described in brief as: queen-blunder-after-king-hunt game. Verdict not yet supplied."
+    },
+    {
+      "game_id": "real-resignation-bishop-blunder-chain",
+      "game_type": "resignation",
+      "rating_band": "unknown",
+      "notes": "Described in brief as: resignation game with a bishop blunder chain; cited in connection with missed causal chains. Verdict not yet supplied."
+    },
+    {
+      "game_id": "real-long-positional-draw",
+      "game_type": "positional",
+      "rating_band": "unknown",
+      "notes": "Described in brief as: long positional draw. Verdict not yet supplied."
+    },
+    {
+      "game_id": "real-stalemate-1",
+      "game_type": "stalemate",
+      "rating_band": "unknown",
+      "notes": "Described in brief as: stalemate games (plural) from real-world testing, distinct from the canonical stalemate fixture. Verdict not yet supplied."
+    },
+    {
+      "game_id": "real-promotion-1",
+      "game_type": "promotion",
+      "rating_band": "unknown",
+      "notes": "Described in brief as: promotion games (plural) from real-world testing, distinct from the canonical promotion-race fixture. Verdict not yet supplied."
+    },
+    {
+      "game_id": "real-high-rated-1",
+      "game_type": "high-rated",
+      "rating_band": "2500+",
+      "notes": "Described in brief as: high-rated (2500+) game. Verdict not yet supplied."
+    },
+    {
+      "game_id": "real-high-rated-2",
+      "game_type": "high-rated",
+      "rating_band": "2500+",
+      "notes": "Described in brief as: high-rated (2500+) games (plural). Verdict not yet supplied."
+    }
+  ]
+}

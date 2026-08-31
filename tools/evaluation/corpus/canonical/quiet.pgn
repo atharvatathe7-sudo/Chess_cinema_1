@@ -1,0 +1,10 @@
+[Event "Chess Cinema canonical corpus"]
+[Site "?"]
+[Date "????.??.??"]
+[White "?"]
+[Black "?"]
+[Result "*"]
+[Termination "unterminated"]
+[CCGameType "quiet-positional"]
+
+1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 4. Ba4 Nf6 5. O-O Be7 *

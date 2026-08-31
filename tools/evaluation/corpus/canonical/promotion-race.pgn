@@ -1,0 +1,10 @@
+[Event "Chess Cinema canonical corpus"]
+[Site "?"]
+[Date "????.??.??"]
+[White "?"]
+[Black "?"]
+[Result "*"]
+[Termination "unterminated"]
+[CCGameType "promotion"]
+
+1. a4 h5 2. a5 h4 3. a6 h3 4. axb7 hxg2 5. bxa8=Q gxh1=Q *

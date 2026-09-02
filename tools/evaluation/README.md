@@ -57,6 +57,38 @@ node tools/evaluation/buildLabels.mjs
 node tools/evaluation/report.mjs
 ```
 
+## Pulling your own games from Chess.com
+
+`fetchChessCom.mjs` pulls a player's recent games from the public Chess.com API
+(no key or login needed) and writes them into `corpus/real/`, deliberately
+balanced across wins, losses and draws so the director is graded on a
+representative spread rather than only on games that went well.
+
+```bash
+# online — needs outbound access to api.chess.com
+node tools/evaluation/fetchChessCom.mjs --user <username> --count 30
+
+# see what it would pick without writing anything
+node tools/evaluation/fetchChessCom.mjs --user <username> --count 30 --dry-run
+
+# offline — if this machine cannot reach api.chess.com:
+#   1. elsewhere, save each monthly archive JSON from
+#      https://api.chess.com/pub/player/<user>/games/YYYY/MM
+#   2. put the .json files in a folder, then:
+node tools/evaluation/fetchChessCom.mjs --user <username> --from-dir ./archives
+```
+
+Useful flags: `--time-class blitz|rapid|bullet|daily`, `--min-moves 8`
+(skips very short/aborted games), `--contact "you@example.com"` (Chess.com asks
+for an identifying User-Agent).
+
+Files are named `real-<date>-<outcome>-<termination>.pgn`, and Chess.com's own
+headers are preserved with a few factual ones appended (`CCOutcomeForUser`,
+`CCUserColour`, `CCTermination`, `CCTimeClass`, `CCSourceUrl`). `CCGameType` is
+only set where the API decides it outright (stalemate, resignation) — calling a
+game "tactical" or "positional" is a human judgement, so the tool leaves
+`game_type` for you.
+
 ## Adding one of your own games
 
 1. Save the PGN as `tools/evaluation/corpus/real/<game-id>.pgn`. Optional

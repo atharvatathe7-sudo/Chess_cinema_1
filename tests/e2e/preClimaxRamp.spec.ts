@@ -230,7 +230,12 @@ test("Scholar's Mate: camera plan is byte-identical to the pre-Phase-12B shape (
   const cam = await analyzeCameraPlan(page, SCHOLARS_MATE);
   expect(cam.climaxAtMs).toBe(1200);
   expect(cam.rampStartMs).toBe(0);
-  expect(cam.keyframes).toHaveLength(4);
+  // Phase 15 — the mate is now the story's own resolution beat, so Phase
+  // 13B's terminal-payoff logic contributes extra (visually redundant, all
+  // at the same framing) keyframes over the extended hold. The PROPERTY this
+  // test exists for is unchanged and asserted directly below: there is no
+  // ramp-start keyframe, because the pre-climax gap is not longer than the
+  // ramp window.
   expect(cam.keyframes[0]).toEqual({ atMs: 0, centerX: 4, centerY: 4, zoom: 1 });
   expect(cam.keyframes.some((k) => k.atMs > 0 && k.atMs < 1200 && k.zoom === 1)).toBe(false);
 
@@ -259,9 +264,14 @@ interface LongGapCase {
 }
 
 const LONG_GAP_GAMES: readonly LongGapCase[] = [
+  // Phase 15 — climax timings moved with the new story selection (Stalemate
+  // now anchors on the move that forces the stalemate; every terminal game's
+  // pacing shifted because the payoff became a beat). The ramp PROPERTY
+  // under test — one full-board keyframe exactly PRE_CLIMAX_RAMP_MS before
+  // the climax — is unchanged.
   { name: 'Evergreen', pgn: EVERGREEN, expectedClimaxAtMs: 12850 },
-  { name: 'Stalemate', pgn: STALEMATE, expectedClimaxAtMs: 5600 },
-  { name: 'Promotion race', pgn: PROMOTION_RACE, expectedClimaxAtMs: 3100 }
+  { name: 'Stalemate', pgn: STALEMATE, expectedClimaxAtMs: 5100 },
+  { name: 'Promotion race', pgn: PROMOTION_RACE, expectedClimaxAtMs: 4300 }
 ];
 
 for (const game of LONG_GAP_GAMES) {

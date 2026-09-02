@@ -329,6 +329,54 @@ function buildPlyTimingMap(timeline: Timeline): ReadonlyMap<number, { atMs: numb
 }
 
 /**
+ * Phase 15 — a span this long is board-wide ambience, not a moment.
+ *
+ * An archetype-track directive can legitimately cover most of a game (a pawn
+ * that promotes on move 55 spans 110 plies). Interval-overlap merging then
+ * swallowed every other directive inside that range, and because
+ * KIND_PRIORITY ranks archetype-track above central-conflict-highlight, the
+ * archetype took the caption — so a game's single decisive moment was
+ * narrated as "a pawn advanced across the board before promoting".
+ *
+ * A long archetype span therefore never merges with a central-conflict
+ * highlight: the two are about different things, and the highlight keeps its
+ * own moment. The archetype is not suppressed — it still renders as its own
+ * moment and its own annotation.
+ */
+const LONG_ARCHETYPE_SPAN_PLIES = 12;
+
+function isLongArchetypeSpan(directive: AnnotationDirective): boolean {
+  return directive.kind === 'archetype-track' && directive.toPly - directive.fromPly > LONG_ARCHETYPE_SPAN_PLIES;
+}
+
+/**
+ * Phase 15 — the climax and the payoff are two BEATS of one story, so they
+ * are two moments.
+ *
+ * Before Phase 15 a central-conflict highlight covered only the climax ply,
+ * so a terminal result three plies later never overlapped it and got its own
+ * caption for free. Now that the consequence chain reaches the ending, the
+ * highlight legitimately spans climax -> resolution — and interval-overlap
+ * merging would fold the ending into the climax's moment, where the higher
+ * KIND_PRIORITY of terminal-result-highlight would then relabel the whole
+ * span "Checkmate" and demote the Climax to a secondary narrative.
+ *
+ * Keeping them apart preserves both captions and mirrors the beat structure
+ * the story layer now produces.
+ */
+function mayMerge(group: readonly AnnotationDirective[], incoming: AnnotationDirective): boolean {
+  const conflictsWithLongArchetype =
+    (incoming.kind === 'central-conflict-highlight' && group.some(isLongArchetypeSpan)) ||
+    (isLongArchetypeSpan(incoming) && group.some((d) => d.kind === 'central-conflict-highlight'));
+
+  const separatesClimaxFromPayoff =
+    (incoming.kind === 'terminal-result-highlight' && group.some((d) => d.kind === 'central-conflict-highlight')) ||
+    (incoming.kind === 'central-conflict-highlight' && group.some((d) => d.kind === 'terminal-result-highlight'));
+
+  return !conflictsWithLongArchetype && !separatesClimaxFromPayoff;
+}
+
+/**
  * Phase 2.8 — deterministic full ordering of a merge group's directives,
  * highest-priority first: same KIND_PRIORITY table as before, with
  * archetype-track ties broken by ARCHETYPE_COLOR_ORDER (mirrors director/
@@ -399,7 +447,7 @@ export function deriveCinematicMoments(
   for (const directive of sorted) {
     const currentGroup = groups[groups.length - 1];
     const groupMaxToPly = currentGroup ? Math.max(...currentGroup.map((d) => d.toPly)) : -Infinity;
-    if (currentGroup && directive.fromPly <= groupMaxToPly) {
+    if (currentGroup && directive.fromPly <= groupMaxToPly && mayMerge(currentGroup, directive)) {
       currentGroup.push(directive);
     } else {
       groups.push([directive]);
@@ -446,7 +494,38 @@ export function deriveCinematicMoments(
     });
   }
 
-  return moments.sort((a, b) => a.atMs - b.atMs || a.fromPly - b.fromPly);
+  return clampToNonOverlapping(moments.sort((a, b) => a.atMs - b.atMs || a.fromPly - b.fromPly));
+}
+
+/**
+ * Phase 15 — restores the non-overlapping-window invariant that
+ * export/drawCaptions.ts's activeMomentAt explicitly documents and relies
+ * on ("the first interval containing logicalTimeMs is the only one that ever
+ * can").
+ *
+ * Merging used to guarantee that for free: any two directives whose ply
+ * ranges overlapped became one Moment. Now that a terminal payoff and a
+ * climax highlight are deliberately kept apart (see mayMerge), two Moments
+ * can share plies — and without this pass the caption drawn over a mate
+ * would be whichever Moment happened to sort first, not the one about the
+ * mate.
+ *
+ * Each window is trimmed to end where the next one begins, which is the
+ * behaviour a viewer expects anyway: the climax caption runs up to the
+ * payoff, then the payoff caption takes over. A Moment left with an empty
+ * window is dropped rather than emitted with a broken timestamp, exactly as
+ * the zero-duration case above already does.
+ */
+function clampToNonOverlapping(moments: readonly CinematicMoment[]): CinematicMoment[] {
+  const clamped: CinematicMoment[] = [];
+  for (let i = 0; i < moments.length; i++) {
+    const moment = moments[i]!;
+    const next = moments[i + 1];
+    const untilMs = next && next.atMs < moment.untilMs ? next.atMs : moment.untilMs;
+    if (untilMs <= moment.atMs) continue;
+    clamped.push(untilMs === moment.untilMs ? moment : { ...moment, untilMs, targetTimeMs: untilMs - 1 });
+  }
+  return clamped;
 }
 
 /**

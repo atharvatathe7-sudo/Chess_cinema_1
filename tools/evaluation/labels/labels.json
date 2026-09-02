@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "schema": "tools/evaluation/schema/label.schema.json",
-  "updatedAt": "2026-08-31T12:58:43.604Z",
+  "updatedAt": "2026-09-02T15:41:16.850Z",
   "records": [
     {
       "game_id": "evergreen",
@@ -27,8 +27,8 @@
         {
           "kind": "archetype-track",
           "label": "Forced Trap",
-          "toPly": 46,
-          "toSan": "Kf8"
+          "toPly": 47,
+          "toSan": "Bxe7#"
         },
         {
           "kind": "terminal-result-highlight",
@@ -48,7 +48,758 @@
         40
       ],
       "capture_file": "tools/evaluation/out/evergreen.json",
-      "captured_at": "2026-08-31T12:53:07.525Z"
+      "captured_at": "2026-09-02T13:32:44.250Z"
+    },
+    {
+      "game_id": "game_01",
+      "status": "captured-unlabelled",
+      "game_type": null,
+      "rating_band": null,
+      "actual_important_event": null,
+      "missed_events": null,
+      "caption_correct": null,
+      "camera_correct": null,
+      "sequence_correct": null,
+      "causally_correct": null,
+      "verdict": null,
+      "failure_category": null,
+      "failure_category_other": null,
+      "notes": null,
+      "labelled_by": null,
+      "labelled_at": null,
+      "pgn_file": "tools/evaluation/corpus/real/game_01.pgn",
+      "result": "0-1",
+      "termination_type": "Black won by resignation",
+      "tool_selected_moments": [
+        {
+          "kind": "central-conflict-highlight",
+          "label": "Climax",
+          "toPly": 86,
+          "toSan": "Rxc7"
+        }
+      ],
+      "tool_caption_text": [
+        "Climax — The decisive moment of the game, leading to an unresolved position."
+      ],
+      "tool_story_primary_ply": 85,
+      "tool_top_raw_swing_ply": 85,
+      "tool_terminal_ply": 88,
+      "tool_camera_focus_plies": [
+        85
+      ],
+      "capture_file": "tools/evaluation/out/game_01.json",
+      "captured_at": "2026-09-02T15:39:12.254Z"
+    },
+    {
+      "game_id": "game_02",
+      "status": "labelled",
+      "game_type": null,
+      "rating_band": null,
+      "actual_important_event": "Queen sacrifice on e8 forces Rxe8, sealing in the king for a smothered knight mate on f7.",
+      "missed_events": [
+        "The queen sacrifice on move 29 (Qe8+), which is the actual heart of the combination, is not surfaced as its own moment."
+      ],
+      "caption_correct": false,
+      "camera_correct": false,
+      "sequence_correct": false,
+      "causally_correct": false,
+      "verdict": "wrong",
+      "failure_category": "fabricated-significance",
+      "failure_category_other": null,
+      "notes": "Smothered mate (Philidor's Legacy). The 'king hunt' label is wrong -- the king never traveled, it stayed boxed on e8/d7/d8. Confirmed against real PGN paste from user, byte-identical to corpus/real/game_02.pgn.",
+      "labelled_by": "user",
+      "labelled_at": "2026-08-31T14:03:26.976068Z",
+      "pgn_file": "tools/evaluation/corpus/real/game_02.pgn",
+      "result": "1-0",
+      "termination_type": "White won by checkmate",
+      "tool_selected_moments": [
+        {
+          "kind": "archetype-track",
+          "label": "Forced Trap",
+          "toPly": 59,
+          "toSan": "Nf7#"
+        },
+        {
+          "kind": "terminal-result-highlight",
+          "label": "Checkmate",
+          "toPly": 59,
+          "toSan": "Nf7#"
+        }
+      ],
+      "tool_caption_text": [
+        "Forced Trap — A sacrifice forced a decisive sequence.",
+        "Checkmate — The game ended in checkmate."
+      ],
+      "tool_story_primary_ply": 56,
+      "tool_top_raw_swing_ply": 53,
+      "tool_terminal_ply": 59,
+      "tool_camera_focus_plies": [
+        56
+      ],
+      "capture_file": "tools/evaluation/out/game_02.json",
+      "captured_at": "2026-09-02T15:39:19.890Z"
+    },
+    {
+      "game_id": "game_03",
+      "status": "captured-unlabelled",
+      "game_type": null,
+      "rating_band": null,
+      "actual_important_event": null,
+      "missed_events": null,
+      "caption_correct": null,
+      "camera_correct": null,
+      "sequence_correct": null,
+      "causally_correct": null,
+      "verdict": null,
+      "failure_category": null,
+      "failure_category_other": null,
+      "notes": null,
+      "labelled_by": null,
+      "labelled_at": null,
+      "pgn_file": "tools/evaluation/corpus/real/game_03.pgn",
+      "result": "1-0",
+      "termination_type": "White won by resignation",
+      "tool_selected_moments": [],
+      "tool_caption_text": [],
+      "tool_story_primary_ply": null,
+      "tool_top_raw_swing_ply": 40,
+      "tool_terminal_ply": 51,
+      "tool_camera_focus_plies": [],
+      "capture_file": "tools/evaluation/out/game_03.json",
+      "captured_at": "2026-09-02T15:39:28.191Z"
+    },
+    {
+      "game_id": "game_04",
+      "status": "captured-unlabelled",
+      "game_type": null,
+      "rating_band": null,
+      "actual_important_event": null,
+      "missed_events": null,
+      "caption_correct": null,
+      "camera_correct": null,
+      "sequence_correct": null,
+      "causally_correct": null,
+      "verdict": null,
+      "failure_category": null,
+      "failure_category_other": null,
+      "notes": null,
+      "labelled_by": null,
+      "labelled_at": null,
+      "pgn_file": "tools/evaluation/corpus/real/game_04.pgn",
+      "result": "0-1",
+      "termination_type": "Black won by checkmate",
+      "tool_selected_moments": [
+        {
+          "kind": "archetype-track",
+          "label": "King Hunt",
+          "toPly": 68,
+          "toSan": "Qg2#"
+        },
+        {
+          "kind": "terminal-result-highlight",
+          "label": "Checkmate",
+          "toPly": 68,
+          "toSan": "Qg2#"
+        }
+      ],
+      "tool_caption_text": [
+        "King Hunt — A forced sequence of checks drove the king across the board, ending in mate.",
+        "Checkmate — The game ended in checkmate."
+      ],
+      "tool_story_primary_ply": 63,
+      "tool_top_raw_swing_ply": 63,
+      "tool_terminal_ply": 68,
+      "tool_camera_focus_plies": [
+        63
+      ],
+      "capture_file": "tools/evaluation/out/game_04.json",
+      "captured_at": "2026-09-02T15:39:37.818Z"
+    },
+    {
+      "game_id": "game_05",
+      "status": "captured-unlabelled",
+      "game_type": null,
+      "rating_band": null,
+      "actual_important_event": null,
+      "missed_events": null,
+      "caption_correct": null,
+      "camera_correct": null,
+      "sequence_correct": null,
+      "causally_correct": null,
+      "verdict": null,
+      "failure_category": null,
+      "failure_category_other": null,
+      "notes": null,
+      "labelled_by": null,
+      "labelled_at": null,
+      "pgn_file": "tools/evaluation/corpus/real/game_05.pgn",
+      "result": "1/2-1/2",
+      "termination_type": "Game drawn by insufficient material",
+      "tool_selected_moments": [
+        {
+          "kind": "threat-refutation-arrow",
+          "label": "Threat Refutation",
+          "toPly": 62,
+          "toSan": "Bxe2"
+        },
+        {
+          "kind": "central-conflict-highlight",
+          "label": "Climax",
+          "toPly": 63,
+          "toSan": "Qxe2"
+        }
+      ],
+      "tool_caption_text": [
+        "Threat Refutation — A threat to win material was refuted here.",
+        "Climax — The decisive moment of the game, leading to a material gain."
+      ],
+      "tool_story_primary_ply": 63,
+      "tool_top_raw_swing_ply": 88,
+      "tool_terminal_ply": 131,
+      "tool_camera_focus_plies": [
+        63
+      ],
+      "capture_file": "tools/evaluation/out/game_05.json",
+      "captured_at": "2026-09-02T15:39:50.370Z"
+    },
+    {
+      "game_id": "game_06",
+      "status": "captured-unlabelled",
+      "game_type": null,
+      "rating_band": null,
+      "actual_important_event": null,
+      "missed_events": null,
+      "caption_correct": null,
+      "camera_correct": null,
+      "sequence_correct": null,
+      "causally_correct": null,
+      "verdict": null,
+      "failure_category": null,
+      "failure_category_other": null,
+      "notes": null,
+      "labelled_by": null,
+      "labelled_at": null,
+      "pgn_file": "tools/evaluation/corpus/real/game_06.pgn",
+      "result": "1-0",
+      "termination_type": "unterminated",
+      "tool_selected_moments": [],
+      "tool_caption_text": [],
+      "tool_story_primary_ply": null,
+      "tool_top_raw_swing_ply": 21,
+      "tool_terminal_ply": 23,
+      "tool_camera_focus_plies": [],
+      "capture_file": "tools/evaluation/out/game_06.json",
+      "captured_at": "2026-09-02T15:39:55.641Z"
+    },
+    {
+      "game_id": "game_07",
+      "status": "captured-unlabelled",
+      "game_type": null,
+      "rating_band": null,
+      "actual_important_event": null,
+      "missed_events": null,
+      "caption_correct": null,
+      "camera_correct": null,
+      "sequence_correct": null,
+      "causally_correct": null,
+      "verdict": null,
+      "failure_category": null,
+      "failure_category_other": null,
+      "notes": null,
+      "labelled_by": null,
+      "labelled_at": null,
+      "pgn_file": "tools/evaluation/corpus/real/game_07.pgn",
+      "result": "0-1",
+      "termination_type": "Black won by resignation",
+      "tool_selected_moments": [
+        {
+          "kind": "threat-refutation-arrow",
+          "label": "Threat Refutation",
+          "toPly": 44,
+          "toSan": "Rc5"
+        },
+        {
+          "kind": "central-conflict-highlight",
+          "label": "Climax",
+          "toPly": 49,
+          "toSan": "bxc4"
+        }
+      ],
+      "tool_caption_text": [
+        "Threat Refutation — A threat to win material was refuted here.",
+        "Climax — The decisive moment of the game, leading to an unresolved position."
+      ],
+      "tool_story_primary_ply": 45,
+      "tool_top_raw_swing_ply": 45,
+      "tool_terminal_ply": 70,
+      "tool_camera_focus_plies": [
+        45
+      ],
+      "capture_file": "tools/evaluation/out/game_07.json",
+      "captured_at": "2026-09-02T15:40:03.641Z"
+    },
+    {
+      "game_id": "game_08",
+      "status": "captured-unlabelled",
+      "game_type": null,
+      "rating_band": null,
+      "actual_important_event": null,
+      "missed_events": null,
+      "caption_correct": null,
+      "camera_correct": null,
+      "sequence_correct": null,
+      "causally_correct": null,
+      "verdict": null,
+      "failure_category": null,
+      "failure_category_other": null,
+      "notes": null,
+      "labelled_by": null,
+      "labelled_at": null,
+      "pgn_file": "tools/evaluation/corpus/real/game_08.pgn",
+      "result": "1-0",
+      "termination_type": "White won by checkmate",
+      "tool_selected_moments": [
+        {
+          "kind": "threat-refutation-arrow",
+          "label": "Threat Refutation",
+          "toPly": 51,
+          "toSan": "Bxg7"
+        },
+        {
+          "kind": "central-conflict-highlight",
+          "label": "Climax",
+          "toPly": 55,
+          "toSan": "Rc8#"
+        },
+        {
+          "kind": "terminal-result-highlight",
+          "label": "Checkmate",
+          "toPly": 55,
+          "toSan": "Rc8#"
+        }
+      ],
+      "tool_caption_text": [
+        "Threat Refutation — A threat to win material was refuted here.",
+        "Climax — The decisive moment of the game, leading to an unresolved position.",
+        "Checkmate — The game ended in checkmate."
+      ],
+      "tool_story_primary_ply": 52,
+      "tool_top_raw_swing_ply": 52,
+      "tool_terminal_ply": 55,
+      "tool_camera_focus_plies": [
+        52
+      ],
+      "capture_file": "tools/evaluation/out/game_08.json",
+      "captured_at": "2026-09-02T15:40:10.005Z"
+    },
+    {
+      "game_id": "game_09",
+      "status": "captured-unlabelled",
+      "game_type": null,
+      "rating_band": null,
+      "actual_important_event": null,
+      "missed_events": null,
+      "caption_correct": null,
+      "camera_correct": null,
+      "sequence_correct": null,
+      "causally_correct": null,
+      "verdict": null,
+      "failure_category": null,
+      "failure_category_other": null,
+      "notes": null,
+      "labelled_by": null,
+      "labelled_at": null,
+      "pgn_file": "tools/evaluation/corpus/real/game_09.pgn",
+      "result": "1/2-1/2",
+      "termination_type": "terminal",
+      "tool_selected_moments": [
+        {
+          "kind": "central-conflict-highlight",
+          "label": "Climax",
+          "toPly": 118,
+          "toSan": "Nd3"
+        },
+        {
+          "kind": "terminal-result-highlight",
+          "label": "Stalemate",
+          "toPly": 118,
+          "toSan": "Nd3"
+        }
+      ],
+      "tool_caption_text": [
+        "Climax — The decisive moment — a king-safety issue led to an unresolved position.",
+        "Stalemate — The game ended in a stalemate — a draw by no legal moves."
+      ],
+      "tool_story_primary_ply": 116,
+      "tool_top_raw_swing_ply": 116,
+      "tool_terminal_ply": 118,
+      "tool_camera_focus_plies": [
+        116
+      ],
+      "capture_file": "tools/evaluation/out/game_09.json",
+      "captured_at": "2026-09-02T15:40:18.787Z"
+    },
+    {
+      "game_id": "game_10",
+      "status": "captured-unlabelled",
+      "game_type": null,
+      "rating_band": null,
+      "actual_important_event": null,
+      "missed_events": null,
+      "caption_correct": null,
+      "camera_correct": null,
+      "sequence_correct": null,
+      "causally_correct": null,
+      "verdict": null,
+      "failure_category": null,
+      "failure_category_other": null,
+      "notes": null,
+      "labelled_by": null,
+      "labelled_at": null,
+      "pgn_file": "tools/evaluation/corpus/real/game_10.pgn",
+      "result": "1/2-1/2",
+      "termination_type": "Game drawn by timeout vs insufficient material",
+      "tool_selected_moments": [
+        {
+          "kind": "archetype-track",
+          "label": "Pawn Journey",
+          "toPly": 115,
+          "toSan": "Qfc5+"
+        },
+        {
+          "kind": "archetype-track",
+          "label": "King Hunt",
+          "toPly": 118,
+          "toSan": "Kd2"
+        }
+      ],
+      "tool_caption_text": [
+        "Pawn Journey — A pawn advanced across the board before promoting.",
+        "King Hunt — A forced sequence of checks drove the king across the board, ending in mate."
+      ],
+      "tool_story_primary_ply": 111,
+      "tool_top_raw_swing_ply": 62,
+      "tool_terminal_ply": 118,
+      "tool_camera_focus_plies": [
+        111
+      ],
+      "capture_file": "tools/evaluation/out/game_10.json",
+      "captured_at": "2026-09-02T15:40:29.571Z"
+    },
+    {
+      "game_id": "game_11",
+      "status": "captured-unlabelled",
+      "game_type": null,
+      "rating_band": null,
+      "actual_important_event": null,
+      "missed_events": null,
+      "caption_correct": null,
+      "camera_correct": null,
+      "sequence_correct": null,
+      "causally_correct": null,
+      "verdict": null,
+      "failure_category": null,
+      "failure_category_other": null,
+      "notes": null,
+      "labelled_by": null,
+      "labelled_at": null,
+      "pgn_file": "tools/evaluation/corpus/real/game_11.pgn",
+      "result": "1-0",
+      "termination_type": "unterminated",
+      "tool_selected_moments": [
+        {
+          "kind": "archetype-track",
+          "label": "King Hunt",
+          "toPly": 88,
+          "toSan": "Kd6"
+        },
+        {
+          "kind": "central-conflict-highlight",
+          "label": "Climax",
+          "toPly": 86,
+          "toSan": "Ke5"
+        }
+      ],
+      "tool_caption_text": [
+        "King Hunt — A forced sequence of checks drove the king across the board, ending in mate.",
+        "Climax — The decisive moment of the game, leading to an unresolved position."
+      ],
+      "tool_story_primary_ply": 86,
+      "tool_top_raw_swing_ply": 27,
+      "tool_terminal_ply": 90,
+      "tool_camera_focus_plies": [
+        86
+      ],
+      "capture_file": "tools/evaluation/out/game_11.json",
+      "captured_at": "2026-09-02T15:40:37.460Z"
+    },
+    {
+      "game_id": "game_12",
+      "status": "captured-unlabelled",
+      "game_type": null,
+      "rating_band": null,
+      "actual_important_event": null,
+      "missed_events": null,
+      "caption_correct": null,
+      "camera_correct": null,
+      "sequence_correct": null,
+      "causally_correct": null,
+      "verdict": null,
+      "failure_category": null,
+      "failure_category_other": null,
+      "notes": null,
+      "labelled_by": null,
+      "labelled_at": null,
+      "pgn_file": "tools/evaluation/corpus/real/game_12.pgn",
+      "result": "1-0",
+      "termination_type": "terminal",
+      "tool_selected_moments": [
+        {
+          "kind": "threat-refutation-arrow",
+          "label": "Threat Refutation",
+          "toPly": 47,
+          "toSan": "Rf6+"
+        },
+        {
+          "kind": "central-conflict-highlight",
+          "label": "Climax",
+          "toPly": 49,
+          "toSan": "Qxa8#"
+        },
+        {
+          "kind": "terminal-result-highlight",
+          "label": "Checkmate",
+          "toPly": 49,
+          "toSan": "Qxa8#"
+        }
+      ],
+      "tool_caption_text": [
+        "Threat Refutation — A threat to win material was refuted here.",
+        "Climax — The decisive moment of the game, leading to an unresolved position.",
+        "Checkmate — The game ended in checkmate."
+      ],
+      "tool_story_primary_ply": 48,
+      "tool_top_raw_swing_ply": 46,
+      "tool_terminal_ply": 49,
+      "tool_camera_focus_plies": [
+        48
+      ],
+      "capture_file": "tools/evaluation/out/game_12.json",
+      "captured_at": "2026-09-02T15:40:44.320Z"
+    },
+    {
+      "game_id": "game_13",
+      "status": "captured-unlabelled",
+      "game_type": null,
+      "rating_band": null,
+      "actual_important_event": null,
+      "missed_events": null,
+      "caption_correct": null,
+      "camera_correct": null,
+      "sequence_correct": null,
+      "causally_correct": null,
+      "verdict": null,
+      "failure_category": null,
+      "failure_category_other": null,
+      "notes": null,
+      "labelled_by": null,
+      "labelled_at": null,
+      "pgn_file": "tools/evaluation/corpus/real/game_13.pgn",
+      "result": "1-0",
+      "termination_type": "White won by resignation",
+      "tool_selected_moments": [
+        {
+          "kind": "central-conflict-highlight",
+          "label": "Climax",
+          "toPly": 14,
+          "toSan": "Rb8"
+        }
+      ],
+      "tool_caption_text": [
+        "Climax — The decisive moment of the game, leading to an unresolved position."
+      ],
+      "tool_story_primary_ply": 14,
+      "tool_top_raw_swing_ply": 14,
+      "tool_terminal_ply": 15,
+      "tool_camera_focus_plies": [
+        14
+      ],
+      "capture_file": "tools/evaluation/out/game_13.json",
+      "captured_at": "2026-09-02T15:40:49.578Z"
+    },
+    {
+      "game_id": "game_14",
+      "status": "captured-unlabelled",
+      "game_type": null,
+      "rating_band": null,
+      "actual_important_event": null,
+      "missed_events": null,
+      "caption_correct": null,
+      "camera_correct": null,
+      "sequence_correct": null,
+      "causally_correct": null,
+      "verdict": null,
+      "failure_category": null,
+      "failure_category_other": null,
+      "notes": null,
+      "labelled_by": null,
+      "labelled_at": null,
+      "pgn_file": "tools/evaluation/corpus/real/game_14.pgn",
+      "result": "0-1",
+      "termination_type": "Black won by resignation",
+      "tool_selected_moments": [
+        {
+          "kind": "central-conflict-highlight",
+          "label": "Climax",
+          "toPly": 47,
+          "toSan": "Kf1"
+        }
+      ],
+      "tool_caption_text": [
+        "Climax — The decisive moment of the game, leading to the threat being repelled."
+      ],
+      "tool_story_primary_ply": 47,
+      "tool_top_raw_swing_ply": 43,
+      "tool_terminal_ply": 47,
+      "tool_camera_focus_plies": [
+        47
+      ],
+      "capture_file": "tools/evaluation/out/game_14.json",
+      "captured_at": "2026-09-02T15:40:55.661Z"
+    },
+    {
+      "game_id": "game_15",
+      "status": "captured-unlabelled",
+      "game_type": null,
+      "rating_band": null,
+      "actual_important_event": null,
+      "missed_events": null,
+      "caption_correct": null,
+      "camera_correct": null,
+      "sequence_correct": null,
+      "causally_correct": null,
+      "verdict": null,
+      "failure_category": null,
+      "failure_category_other": null,
+      "notes": null,
+      "labelled_by": null,
+      "labelled_at": null,
+      "pgn_file": "tools/evaluation/corpus/real/game_15.pgn",
+      "result": "1-0",
+      "termination_type": "unterminated",
+      "tool_selected_moments": [
+        {
+          "kind": "central-conflict-highlight",
+          "label": "Climax",
+          "toPly": 42,
+          "toSan": "Rdd8"
+        }
+      ],
+      "tool_caption_text": [
+        "Climax — The decisive moment of the game, leading to an unresolved position."
+      ],
+      "tool_story_primary_ply": 42,
+      "tool_top_raw_swing_ply": 42,
+      "tool_terminal_ply": 43,
+      "tool_camera_focus_plies": [
+        42
+      ],
+      "capture_file": "tools/evaluation/out/game_15.json",
+      "captured_at": "2026-09-02T15:41:03.341Z"
+    },
+    {
+      "game_id": "game_16",
+      "status": "captured-unlabelled",
+      "game_type": null,
+      "rating_band": null,
+      "actual_important_event": null,
+      "missed_events": null,
+      "caption_correct": null,
+      "camera_correct": null,
+      "sequence_correct": null,
+      "causally_correct": null,
+      "verdict": null,
+      "failure_category": null,
+      "failure_category_other": null,
+      "notes": null,
+      "labelled_by": null,
+      "labelled_at": null,
+      "pgn_file": "tools/evaluation/corpus/real/game_16.pgn",
+      "result": "1-0",
+      "termination_type": "White won by checkmate",
+      "tool_selected_moments": [
+        {
+          "kind": "central-conflict-highlight",
+          "label": "Climax",
+          "toPly": 45,
+          "toSan": "Qh8#"
+        },
+        {
+          "kind": "terminal-result-highlight",
+          "label": "Checkmate",
+          "toPly": 45,
+          "toSan": "Qh8#"
+        }
+      ],
+      "tool_caption_text": [
+        "Climax — The decisive moment of the game, leading to an unresolved position.",
+        "Checkmate — The game ended in checkmate."
+      ],
+      "tool_story_primary_ply": 42,
+      "tool_top_raw_swing_ply": 40,
+      "tool_terminal_ply": 45,
+      "tool_camera_focus_plies": [
+        42
+      ],
+      "capture_file": "tools/evaluation/out/game_16.json",
+      "captured_at": "2026-09-02T15:41:10.787Z"
+    },
+    {
+      "game_id": "game_17",
+      "status": "captured-unlabelled",
+      "game_type": null,
+      "rating_band": null,
+      "actual_important_event": null,
+      "missed_events": null,
+      "caption_correct": null,
+      "camera_correct": null,
+      "sequence_correct": null,
+      "causally_correct": null,
+      "verdict": null,
+      "failure_category": null,
+      "failure_category_other": null,
+      "notes": null,
+      "labelled_by": null,
+      "labelled_at": null,
+      "pgn_file": "tools/evaluation/corpus/real/game_17.pgn",
+      "result": "1-0",
+      "termination_type": "terminal",
+      "tool_selected_moments": [
+        {
+          "kind": "central-conflict-highlight",
+          "label": "Climax",
+          "toPly": 21,
+          "toSan": "Qxf7#"
+        },
+        {
+          "kind": "terminal-result-highlight",
+          "label": "Checkmate",
+          "toPly": 21,
+          "toSan": "Qxf7#"
+        }
+      ],
+      "tool_caption_text": [
+        "Climax — The decisive moment — a positional shift led to an unresolved position.",
+        "Checkmate — The game ended in checkmate."
+      ],
+      "tool_story_primary_ply": 20,
+      "tool_top_raw_swing_ply": 20,
+      "tool_terminal_ply": 21,
+      "tool_camera_focus_plies": [
+        20
+      ],
+      "capture_file": "tools/evaluation/out/game_17.json",
+      "captured_at": "2026-09-02T15:41:16.630Z"
     },
     {
       "game_id": "promotion-race",
@@ -81,14 +832,14 @@
       "tool_caption_text": [
         "Pawn Journey — A pawn advanced across the board before promoting."
       ],
-      "tool_story_primary_ply": 8,
+      "tool_story_primary_ply": 10,
       "tool_top_raw_swing_ply": 8,
       "tool_terminal_ply": 10,
       "tool_camera_focus_plies": [
-        8
+        10
       ],
       "capture_file": "tools/evaluation/out/promotion-race.json",
-      "captured_at": "2026-08-31T12:53:11.557Z"
+      "captured_at": "2026-09-02T13:32:47.072Z"
     },
     {
       "game_id": "quiet",
@@ -117,7 +868,7 @@
       "tool_terminal_ply": 10,
       "tool_camera_focus_plies": [],
       "capture_file": "tools/evaluation/out/quiet.json",
-      "captured_at": "2026-08-31T12:53:15.805Z"
+      "captured_at": "2026-09-02T13:32:50.210Z"
     },
     {
       "game_id": "real-double-check-mate",
@@ -433,8 +1184,8 @@
         {
           "kind": "central-conflict-highlight",
           "label": "Climax",
-          "toPly": 6,
-          "toSan": "Nf6"
+          "toPly": 7,
+          "toSan": "Qxf7#"
         },
         {
           "kind": "terminal-result-highlight",
@@ -444,7 +1195,7 @@
         }
       ],
       "tool_caption_text": [
-        "Climax — The decisive moment of the game, leading to a decisive swing against the player who moved.",
+        "Climax — The decisive moment of the game, leading to an unresolved position.",
         "Checkmate — The game ended in checkmate."
       ],
       "tool_story_primary_ply": 6,
@@ -454,7 +1205,7 @@
         6
       ],
       "capture_file": "tools/evaluation/out/scholars-mate.json",
-      "captured_at": "2026-08-31T12:53:19.039Z"
+      "captured_at": "2026-09-02T13:32:52.900Z"
     },
     {
       "game_id": "stalemate",
@@ -478,16 +1229,10 @@
       "termination_type": "stalemate",
       "tool_selected_moments": [
         {
-          "kind": "threat-refutation-arrow",
-          "label": "Threat Refutation",
-          "toPly": 11,
-          "toSan": "Qxd7+"
-        },
-        {
           "kind": "central-conflict-highlight",
           "label": "Climax",
-          "toPly": 12,
-          "toSan": "Kf7"
+          "toPly": 19,
+          "toSan": "Qe6"
         },
         {
           "kind": "terminal-result-highlight",
@@ -497,18 +1242,17 @@
         }
       ],
       "tool_caption_text": [
-        "Threat Refutation — A threat to win material was refuted here.",
-        "Climax — The decisive moment of the game, leading to the threat being repelled.",
+        "Climax — The decisive moment of the game, leading to an unresolved position.",
         "Stalemate — The game ended in a stalemate — a draw by no legal moves."
       ],
-      "tool_story_primary_ply": 12,
+      "tool_story_primary_ply": 18,
       "tool_top_raw_swing_ply": 12,
       "tool_terminal_ply": 19,
       "tool_camera_focus_plies": [
-        12
+        18
       ],
       "capture_file": "tools/evaluation/out/stalemate.json",
-      "captured_at": "2026-08-31T12:53:22.678Z"
+      "captured_at": "2026-09-02T13:32:55.667Z"
     }
   ]
 }

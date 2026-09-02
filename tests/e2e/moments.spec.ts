@@ -84,7 +84,12 @@ test('Scholar\'s Mate: Next Move overshoot still hides the terminal highlight, b
   // move created 4 threats and removed none). Exact text captured from a
   // fresh real-browser run against this exact PGN, not guessed.
   const climaxItem = page.locator('#moments-list li', { hasText: 'Climax' });
-  await expect(climaxItem.locator('.moment-reason')).toHaveText('The decisive moment of the game, leading to a decisive swing against the player who moved.');
+  // Phase 15 — this move's resolution is now honestly 'unresolved'. It was
+  // previously bucketed as 'repelled' purely from a large negative swing,
+  // with no threat actually removed; Phase 3 then had to paper over that at
+  // caption time with a conservative "decisive swing" phrasing. M3 removes
+  // the mislabel at source, so no workaround phrasing is needed.
+  await expect(climaxItem.locator('.moment-reason')).toHaveText('The decisive moment of the game, leading to an unresolved position.');
 
   // 1. Reproduce the OLD bug with ordinary Next Move, unchanged: Restart,
   // then step past the last move so nextBeatBoundaryMs's fallback lands
@@ -97,7 +102,11 @@ test('Scholar\'s Mate: Next Move overshoot still hides the terminal highlight, b
   }
   const overshotIndicator = await page.locator('#move-indicator').innerText();
   expect(overshotIndicator).toContain('Move 7 / 7');
-  expect(overshotIndicator).toContain('3.6s / 3.6s'); // at scene.durationMs — the exact dead zone
+  // Phase 15 — the scene is longer because the mate is now the story's own
+  // resolution beat (paced as a beat, not as a trailing compressible move).
+  // The dead-zone PROPERTY under test is unchanged: Next Move overshoots to
+  // exactly scene.durationMs.
+  expect(overshotIndicator).toContain('5.8s / 5.8s'); // at scene.durationMs — the exact dead zone
   const overshotPixels = await canvasPixels(page);
 
   // 2. The new, additive path: Restart, then click straight to the
@@ -178,7 +187,9 @@ test('Evergreen: a central-conflict/archetype moment is navigable and Export sti
   // asserts the specific non-terminal one by exact text, with its reason.
   const forcedTrapButton = page.locator('#moments-list button.moment-btn', { hasText: 'Forced Trap' });
   await expect(forcedTrapButton).toHaveCount(1);
-  await expect(forcedTrapButton).toContainText('Move 46');
+  // Phase 15 — the moment now extends through the mate, because the story
+  // owns its payoff: the forced trap's consequence chain reaches ply 47.
+  await expect(forcedTrapButton).toContainText('Move 47');
   const forcedTrapItem = page.locator('#moments-list li', { hasText: 'Forced Trap' });
   await expect(forcedTrapItem.locator('.moment-reason')).toHaveText('A sacrifice forced a decisive sequence.');
 
@@ -205,7 +216,7 @@ test('Evergreen: a central-conflict/archetype moment is navigable and Export sti
   await expect(secondaryNarratives.nth(0)).toHaveText('King Hunt: A forced sequence of checks drove the king across the board, ending in mate.');
   await expect(secondaryNarratives.nth(1)).toHaveText('Climax: The decisive moment of the game, leading to a material gain.');
   // The primary button's accessible name is unaffected by the secondary list.
-  await expect(forcedTrapButton).toHaveText('Forced Trap — Move 46');
+  await expect(forcedTrapButton).toHaveText('Forced Trap — Move 47');
 
   // Phase 2.9: the same secondary narratives are now introduced by a fixed
   // "Also true" label, visually subordinating them to the primary reason.
@@ -264,7 +275,12 @@ test('Promotion race: a second independent multi-narrative Moment also shows the
   await expect(pawnJourneyItem.locator('.moment-narratives-label')).toHaveText('Also true');
   const secondaryNarratives = pawnJourneyItem.locator('.moment-narratives li');
   await expect(secondaryNarratives).toHaveCount(2);
-  await expect(secondaryNarratives.nth(0)).toHaveText('Climax: The decisive moment — a fork led to the threat being repelled.');
+  // Phase 15 — two fabrications removed from one sentence. The "fork" was
+  // whichever motif came first in board-scan order, with no test that the
+  // move created or used it (M5 now withholds it). "The threat being
+  // repelled" came from a large negative swing with no threat removed (M3).
+  // What remains is what the data actually supports.
+  await expect(secondaryNarratives.nth(0)).toHaveText('Climax: The decisive moment of the game, leading to a material gain.');
   await expect(secondaryNarratives.nth(1)).toHaveText('Threat Refutation: A threat to win material was refuted here.');
 
   // The primary button's accessible name is unaffected by the secondary list.
@@ -289,7 +305,10 @@ test('Stalemate: the terminal Moment shows the exact stalemate reason, distinct 
   // clause while leaving the resolution wording intact. Exact text captured
   // from a fresh real-browser run against this exact PGN, not guessed.
   const climaxItem = page.locator('#moments-list li', { hasText: 'Climax' });
-  await expect(climaxItem.locator('.moment-reason')).toHaveText('The decisive moment of the game, leading to the threat being repelled.');
+  // Phase 15 — the story now anchors on the move that forces the stalemate
+  // (the ply immediately before it) rather than an earlier swing, and its
+  // resolution is reported honestly rather than as a repelled threat.
+  await expect(climaxItem.locator('.moment-reason')).toHaveText('The decisive moment of the game, leading to an unresolved position.');
 
   // Phase 2.9: every Moment in this game (Threat Refutation, Climax,
   // Stalemate) has exactly one narrative — none of them should ever gain

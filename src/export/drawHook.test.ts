@@ -1,3 +1,4 @@
+import { noStoryConfidence, unknownOutcome } from '../story/storyFixtures';
 import { describe, expect, it } from 'vitest';
 import type { GameAnalysis, PlyAnalysis, Evaluation } from '../analysis/types';
 import { DEFAULT_ANALYSIS_SETTINGS } from '../analysis/types';
@@ -12,17 +13,43 @@ import { HOOK_FADE_MS, HOOK_TOTAL_MS, HOOK_VISIBLE_MS, hookOpacityAt, selectHook
  * split drawCaptions.ts/drawCaptions.test.ts already use.
  */
 
-/** Minimal but type-correct StoryPlan fixture — only archetypeSignals varies across tests. */
-function fixtureStoryPlan(archetypeSignals: readonly ArchetypeSignal[]): StoryPlan {
+const ARCHETYPE_COLOR_ORDER: Readonly<Record<ArchetypeSignal['archetype'], number>> = {
+  'forced-trap': 0,
+  'king-hunt': 1,
+  'pawn-journey': 2,
+  'stalemate-swindle': 3
+};
+
+/**
+ * Minimal but type-correct StoryPlan fixture.
+ *
+ * Phase 15 — an ARCHETYPE-LED game is now expressed by `leadArchetype`
+ * rather than by the mere presence of signals, so this fixture resolves the
+ * lead the same way story/archetypes.ts's ARCHETYPE_ORDER tie-break does.
+ * That keeps every existing archetype-led expectation intact while going
+ * through the new field. Tests covering a merely SUPPORTING archetype pass
+ * `lead: null` explicitly.
+ */
+function fixtureStoryPlan(
+  archetypeSignals: readonly ArchetypeSignal[],
+  overrides: Partial<StoryPlan> = {}
+): StoryPlan {
+  const ordered = [...archetypeSignals].sort((a, b) => ARCHETYPE_COLOR_ORDER[a.archetype] - ARCHETYPE_COLOR_ORDER[b.archetype]);
+  const lead = ordered[0]?.archetype ?? null;
   return {
     schemaVersion: STORY_SCHEMA_VERSION,
     centralConflict: null,
     beats: [],
     moveTreatment: [],
     archetypeSignals,
+    leadArchetype: lead,
+    supportingArchetypes: ordered.slice(1).map((s) => s.archetype),
     pieceContributions: [],
     explanationOpportunities: [],
-    settings: DEFAULT_STORY_SETTINGS
+    confidence: noStoryConfidence(),
+    outcome: unknownOutcome(),
+    settings: DEFAULT_STORY_SETTINGS,
+    ...overrides
   };
 }
 
@@ -161,5 +188,60 @@ describe('hookOpacityAt', () => {
 
   it('is deterministic: identical input always produces identical output', () => {
     expect(hookOpacityAt(850)).toBe(hookOpacityAt(850));
+  });
+});
+
+/**
+ * Phase 15 (M10) — the hook must reflect what actually happened. The old
+ * rule was "any archetype signal wins, unconditionally", which titled a game
+ * that ended drawn on the clock after whichever pawn had promoted along the
+ * way.
+ */
+describe('selectHook — outcome vs archetype precedence (M10)', () => {
+  const emptyAnalysis = fixtureAnalysis(null);
+
+  it('a merely SUPPORTING archetype does not take the hook from a known ending', () => {
+    const story = fixtureStoryPlan([fixtureArchetypeSignal('pawn-journey')], {
+      leadArchetype: null,
+      supportingArchetypes: ['pawn-journey'],
+      outcome: unknownOutcome({
+        result: '1/2-1/2',
+        termination: 'timeout-vs-insufficient-material',
+        source: 'termination-tag',
+        confidence: 0.9,
+        finalEvaluation: { kind: 'mate', mateIn: 2 }
+      })
+    });
+    expect(selectHook(story, emptyAnalysis)).not.toEqual({ text: 'PAWN JOURNEY' });
+    expect(selectHook(story, emptyAnalysis)).toEqual({ text: 'DRAWN ON TIME' });
+  });
+
+  it('a LEADING archetype still takes the hook, exactly as before', () => {
+    const story = fixtureStoryPlan([fixtureArchetypeSignal('pawn-journey')], {
+      leadArchetype: 'pawn-journey',
+      supportingArchetypes: [],
+      outcome: unknownOutcome({ result: '1-0', termination: 'resignation', source: 'termination-tag', confidence: 0.9 })
+    });
+    expect(selectHook(story, emptyAnalysis)).toEqual({ text: 'PAWN JOURNEY' });
+  });
+
+  it('names an off-board ending the pipeline can identify', () => {
+    const resigned = fixtureStoryPlan([], {
+      outcome: unknownOutcome({ result: '0-1', termination: 'resignation', source: 'termination-tag', confidence: 0.9 })
+    });
+    expect(selectHook(resigned, emptyAnalysis)).toEqual({ text: 'RESIGNATION' });
+  });
+
+  it('falls back to a supporting archetype only when the ending is genuinely unknown', () => {
+    const story = fixtureStoryPlan([fixtureArchetypeSignal('king-hunt')], {
+      leadArchetype: null,
+      supportingArchetypes: ['king-hunt'],
+      outcome: unknownOutcome()
+    });
+    expect(selectHook(story, emptyAnalysis)).toEqual({ text: 'KING HUNT' });
+  });
+
+  it('returns null when there is neither an archetype nor any known ending', () => {
+    expect(selectHook(fixtureStoryPlan([]), emptyAnalysis)).toBeNull();
   });
 });

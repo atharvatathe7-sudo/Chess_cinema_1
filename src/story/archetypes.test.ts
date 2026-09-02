@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { buildArchetypeSignals } from './archetypes';
+import { buildArchetypeSignals, resolveArchetypeRoles } from './archetypes';
 import { DEFAULT_STORY_SETTINGS } from './types';
+import type { ArchetypeSignal, CentralConflict, ConsequenceChain } from './types';
 import {
   analysisFrom,
   causeConsequence,
+  unknownOutcome,
   evidence,
   forcedSequence,
   gameArc,
@@ -181,5 +183,95 @@ describe('buildArchetypeSignals — deterministic ordering', () => {
 
     const signals = buildArchetypeSignals(gamePawn, emptyAnalysis, understanding, DEFAULT_STORY_SETTINGS, []);
     expect(signals.map((s) => s.archetype)).toEqual(['forced-trap', 'king-hunt', 'pawn-journey']);
+  });
+});
+
+/**
+ * Phase 15 (M9 + R1) — archetype lead/supporting resolution.
+ */
+describe('resolveArchetypeRoles', () => {
+  const chain = (triggerPly: number, payoffPly: number): ConsequenceChain => ({
+    triggerPly,
+    antecedents: [],
+    consequents: [{ ply: payoffPly, linkType: 'terminal-arrival', evidenceId: 't' }],
+    payoff: { kind: 'checkmate', atPly: payoffPly },
+    reachesResult: true,
+    evidence: { basis: 'chess-rule', sourcePlies: [triggerPly], note: 'fixture' }
+  });
+
+  const conflict = (triggerPly: number, payoffPly: number): CentralConflict => ({
+    primaryTurningPointId: `tp-${triggerPly}`,
+    causalChain: [],
+    secondaryConflicts: [],
+    consequenceChain: chain(triggerPly, payoffPly),
+    tier: 'A'
+  });
+
+  const signal = (archetype: ArchetypeSignal['archetype'], plies: readonly number[], beatIds: readonly string[]): ArchetypeSignal => ({
+    archetype,
+    plies,
+    beatIds,
+    evidence: { basis: 'chess-rule', sourcePlies: plies, note: 'fixture' }
+  });
+
+  const decidedOutcome = unknownOutcome({
+    result: '1-0',
+    termination: 'checkmate',
+    onBoard: true,
+    finalEvaluation: { kind: 'terminal', result: 'white-wins' },
+    source: 'engine-terminal',
+    confidence: 1
+  });
+
+  it('lets an archetype lead when it contains the trigger and participates in the story beats', () => {
+    const roles = resolveArchetypeRoles([signal('forced-trap', [39, 40], ['beat-climax-40'])], conflict(40, 47), decidedOutcome);
+    expect(roles.leadArchetype).toBe('forced-trap');
+    expect(roles.supportingArchetypes).toEqual([]);
+  });
+
+  it('demotes an archetype that does not contain the trigger to supporting', () => {
+    // The game-10 shape: a pawn journey running through a game whose
+    // decisive moment it never touches.
+    const roles = resolveArchetypeRoles([signal('pawn-journey', [3, 13, 41, 57], ['beat-climax-62'])], conflict(62, 118), decidedOutcome);
+    expect(roles.leadArchetype).toBeNull();
+    expect(roles.supportingArchetypes).toEqual(['pawn-journey']);
+  });
+
+  it('demotes an archetype that participates in no beat at all', () => {
+    const roles = resolveArchetypeRoles([signal('pawn-journey', [40], [])], conflict(40, 47), decidedOutcome);
+    expect(roles.leadArchetype).toBeNull();
+  });
+
+  it('resolves ties by the one existing archetype priority order', () => {
+    const roles = resolveArchetypeRoles(
+      [signal('king-hunt', [40], ['b1']), signal('forced-trap', [40], ['b1'])],
+      conflict(40, 47),
+      decidedOutcome
+    );
+    expect(roles.leadArchetype).toBe('forced-trap');
+    expect(roles.supportingArchetypes).toEqual(['king-hunt']);
+  });
+
+  it('R1 — no archetype leads when the board contradicts the recorded result', () => {
+    // A forced mate stood on the board while the game was recorded drawn.
+    // The most surprising true thing about the game is how it ended, so the
+    // ending owns the headline even though the archetype qualifies.
+    const divergent = unknownOutcome({
+      result: '1/2-1/2',
+      termination: 'timeout-vs-insufficient-material',
+      onBoard: false,
+      finalEvaluation: { kind: 'mate', mateIn: 2 },
+      source: 'termination-tag',
+      confidence: 0.9
+    });
+    const roles = resolveArchetypeRoles([signal('pawn-journey', [111], ['beat-climax-111'])], conflict(111, 118), divergent);
+    expect(roles.leadArchetype).toBeNull();
+    expect(roles.supportingArchetypes).toEqual(['pawn-journey']);
+  });
+
+  it('no archetype leads when there is no central conflict at all', () => {
+    const roles = resolveArchetypeRoles([signal('king-hunt', [1], ['b1'])], null, decidedOutcome);
+    expect(roles.leadArchetype).toBeNull();
+    expect(roles.supportingArchetypes).toEqual(['king-hunt']);
   });
 });

@@ -1,3 +1,4 @@
+import { motifInstanceKeyFor } from './motifs';
 import { describe, expect, it } from 'vitest';
 import type { PlyAnalysis } from '../analysis/types';
 import type { PlySignals, TacticalMotifInstance } from './types';
@@ -81,6 +82,8 @@ describe('computeSignificance', () => {
       ply: 1,
       motif: 'fork',
       squares: { attacker: 'b6', targets: ['a8', 'c8'] },
+      motifInstanceKey: motifInstanceKeyFor('fork', 'b6', ['a8', 'c8'], undefined),
+      firstSeenPly: 1,
       geometryEvidence: { basis: 'chess-rule', sourcePlies: [1], note: 'x' },
       significanceEvidence: { basis: 'engine-eval', sourcePlies: [1], note: 'confirmed' }
     };
@@ -95,6 +98,8 @@ describe('computeSignificance', () => {
       ply: 1,
       motif: 'fork',
       squares: { attacker: 'b6', targets: ['a8', 'c8'] },
+      motifInstanceKey: motifInstanceKeyFor('fork', 'b6', ['a8', 'c8'], undefined),
+      firstSeenPly: 1,
       geometryEvidence: { basis: 'chess-rule', sourcePlies: [1], note: 'x' }
     };
     const signals: PlySignals = { ...noSignals, motifIds: ['m1'] };

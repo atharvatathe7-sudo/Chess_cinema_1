@@ -55,12 +55,32 @@ export function buildBeats(centralConflict: CentralConflict | null, understandin
   const buildingSequencePlies = buildingLinks.map((l) => l.ply).sort((a, b) => a - b);
 
   const lastPly = understanding.plies[understanding.plies.length - 1]!.ply;
-  const rawEndPly = Math.max(
+
+  /**
+   * Phase 15 — the consequence range now comes from the selected story's own
+   * ConsequenceChain, not from re-deriving a local maximum.
+   *
+   * The old rule was `max(evaluationConsequence.atPly,
+   * materialConsequence.atPly, multiMoveConsequence.endPly, climaxPly)` —
+   * every term of which is local to the climax move. When a climax had no
+   * forcing sequence, all four collapsed to the climax ply itself, so there
+   * was no consequence beat and no resolution beat, and the move that
+   * actually ended the game was left outside the story entirely.
+   *
+   * The chain's own consequents are used when present (they can arrive at a
+   * mate or stalemate several plies later via mate-transition continuity and
+   * terminal arrival); the old local maximum remains as the fallback for a
+   * conflict built without a chain, so games with no consequence keep their
+   * existing beat structure exactly.
+   */
+  const chainEndPly = centralConflict.consequenceChain?.consequents.at(-1)?.ply;
+  const localEndPly = Math.max(
     cc.evaluationConsequence.atPly,
     cc.materialConsequence.atPly,
     cc.multiMoveConsequence?.endPly ?? winnerPly,
     winnerPly
   );
+  const rawEndPly = Math.max(chainEndPly ?? winnerPly, localEndPly);
   const consequenceEndPly = Math.min(rawEndPly, lastPly);
 
   const fullConsequenceRange: number[] = [];

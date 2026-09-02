@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { buildBeats } from './beats';
-import { causeConsequence, plySemantics, plySignals, turningPoint, understandingFrom } from './storyFixtures';
+import { causeConsequence, plySemantics, plySignals, turningPoint, understandingFrom,
+  consequenceChain
+} from './storyFixtures';
 import type { CentralConflict } from './types';
 
 function pliesUpTo(n: number) {
@@ -16,7 +18,9 @@ describe('buildBeats', () => {
     const cc = causeConsequence(5); // default atPly === 5 for both consequence fields
     const tp = turningPoint(5, 'forced-mate-delivery', cc, 900);
     const understanding = understandingFrom({ plies: pliesUpTo(5), turningPoints: [tp] });
-    const centralConflict: CentralConflict = { primaryTurningPointId: 'tp-5', causalChain: [], secondaryConflicts: [] };
+    const centralConflict: CentralConflict = { primaryTurningPointId: 'tp-5', causalChain: [], secondaryConflicts: [],
+      consequenceChain: consequenceChain(0),
+      tier: 'C' as const };
 
     const beats = buildBeats(centralConflict, understanding);
     expect(beats.map((b) => b.role)).toEqual(['climax', 'resolution']);
@@ -32,7 +36,9 @@ describe('buildBeats', () => {
     });
     const tp = turningPoint(4, 'decisive-swing', cc, 500);
     const understanding = understandingFrom({ plies: pliesUpTo(10), turningPoints: [tp] });
-    const centralConflict: CentralConflict = { primaryTurningPointId: 'tp-4', causalChain: [], secondaryConflicts: [] };
+    const centralConflict: CentralConflict = { primaryTurningPointId: 'tp-4', causalChain: [], secondaryConflicts: [],
+      consequenceChain: consequenceChain(0),
+      tier: 'C' as const };
 
     const beats = buildBeats(centralConflict, understanding);
     expect(beats.map((b) => b.role)).toEqual(['climax', 'consequence']);
@@ -47,7 +53,9 @@ describe('buildBeats', () => {
     });
     const tp = turningPoint(5, 'decisive-swing', cc, 600);
     const understanding = understandingFrom({ plies: pliesUpTo(8), turningPoints: [tp] });
-    const centralConflict: CentralConflict = { primaryTurningPointId: 'tp-5', causalChain: [], secondaryConflicts: [] };
+    const centralConflict: CentralConflict = { primaryTurningPointId: 'tp-5', causalChain: [], secondaryConflicts: [],
+      consequenceChain: consequenceChain(0),
+      tier: 'C' as const };
 
     const beats = buildBeats(centralConflict, understanding);
     expect(beats.map((b) => b.role)).toEqual(['climax', 'consequence', 'resolution']);
@@ -63,7 +71,9 @@ describe('buildBeats', () => {
     const centralConflict: CentralConflict = {
       primaryTurningPointId: 'tp-10',
       causalChain: [{ ply: 3, linkType: 'threat-refutation', evidenceId: 'threat-3-0' }],
-      secondaryConflicts: []
+      secondaryConflicts: [],
+      consequenceChain: consequenceChain(0),
+      tier: 'C' as const
     };
 
     const beats = buildBeats(centralConflict, understanding);
@@ -80,7 +90,9 @@ describe('buildBeats', () => {
     const centralConflict: CentralConflict = {
       primaryTurningPointId: 'tp-10',
       causalChain: [{ ply: 8, linkType: 'same-sequence', evidenceId: 'seq-y' }],
-      secondaryConflicts: []
+      secondaryConflicts: [],
+      consequenceChain: consequenceChain(0),
+      tier: 'C' as const
     };
 
     const beats = buildBeats(centralConflict, understanding);
@@ -97,7 +109,9 @@ describe('buildBeats', () => {
     const centralConflict: CentralConflict = {
       primaryTurningPointId: 'tp-6',
       causalChain: [{ ply: 2, linkType: 'threat-refutation', evidenceId: 'threat-2-0' }],
-      secondaryConflicts: []
+      secondaryConflicts: [],
+      consequenceChain: consequenceChain(0),
+      tier: 'C' as const
     };
 
     const beats = buildBeats(centralConflict, understanding);

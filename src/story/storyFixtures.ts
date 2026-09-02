@@ -2,6 +2,7 @@ import type { Color } from '../chess/ChessEngine';
 import type { GameAnalysis, PlyAnalysis } from '../analysis/types';
 import type { GameRecord, MoveRecord } from '../pgn/types';
 import { pieceIdFor } from '../pgn/pieceId';
+import { motifInstanceKeyFor } from '../understanding/motifs';
 import type {
   BestAlternativeRecord,
   CauseConsequenceRecord,
@@ -20,6 +21,8 @@ import type {
   UnderstandingSettings
 } from '../understanding/types';
 import { DEFAULT_UNDERSTANDING_SETTINGS, UNDERSTANDING_SCHEMA_VERSION } from '../understanding/types';
+import type { CentralConflict, ConsequenceChain, StoryConfidence } from './types';
+import type { GameOutcome } from './gameOutcome';
 
 /**
  * Test-only fixture builders shared across src/story/*.test.ts. NOT a
@@ -109,6 +112,70 @@ export function plySemantics(ply: number, signals: PlySignals, overrides: Partia
   };
 }
 
+// ============================================================
+// Phase 15 fixtures
+// ============================================================
+
+/**
+ * A chain that goes nowhere: no antecedents, no consequents, unresolved
+ * payoff. This is the correct default for a fixture that is not testing
+ * consequences — it asserts nothing, so a test that cares must opt in.
+ */
+export function consequenceChain(triggerPly: number, overrides: Partial<ConsequenceChain> = {}): ConsequenceChain {
+  return {
+    triggerPly,
+    antecedents: [],
+    consequents: [],
+    payoff: { kind: 'unresolved' },
+    reachesResult: false,
+    evidence: evidence('chess-rule', [triggerPly], 'fixture chain'),
+    ...overrides
+  };
+}
+
+export function centralConflict(
+  primaryTurningPointId: string,
+  triggerPly: number,
+  overrides: Partial<CentralConflict> = {}
+): CentralConflict {
+  return {
+    primaryTurningPointId,
+    causalChain: [],
+    secondaryConflicts: [],
+    consequenceChain: consequenceChain(triggerPly),
+    tier: 'C',
+    ...overrides
+  };
+}
+
+/** An outcome that knows nothing — the honest default for fixtures with no ending under test. */
+export function unknownOutcome(overrides: Partial<GameOutcome> = {}): GameOutcome {
+  return {
+    result: null,
+    termination: 'absent',
+    onBoard: false,
+    finalEvaluation: { kind: 'cp', cp: 0 },
+    finalMaterialDiff: 0,
+    source: 'none',
+    confidence: 0,
+    ...overrides
+  };
+}
+
+/** Matches buildConfidence's own no-story shape. */
+export function noStoryConfidence(overrides: Partial<StoryConfidence> = {}): StoryConfidence {
+  return {
+    level: 'none',
+    causalClaimAllowed: false,
+    mechanismVerified: false,
+    resolutionCorroborated: false,
+    hasConsequents: false,
+    reachesResult: false,
+    reasons: ['fixture'],
+    ...overrides
+  };
+}
+
 export function bestAlternative(overrides: Partial<BestAlternativeRecord> = {}): BestAlternativeRecord {
   return {
     topMove: { uci: 'a2a3', principalVariation: ['a2a3'] },
@@ -136,6 +203,11 @@ export function causeConsequence(ply: number, overrides: Partial<CauseConsequenc
     threatsCreated: [],
     threatsRemoved: [],
     mechanism: null,
+    // Phase 15 — a fixture with no mechanism is trivially "verified": there
+    // is no claim to back up. Fixtures that set `mechanism` must also set
+    // `mechanismVerified: true` explicitly, which keeps the invariant
+    // "a named mechanism is always a verified one" true even in test data.
+    mechanismVerified: false,
     bestAlternative: bestAlternative(),
     evaluationConsequence: { atPly: ply, swingCp: 0 },
     materialConsequence: { atPly: ply, netMaterialChange: 0 },
@@ -200,14 +272,21 @@ export function tacticalMotif(
   ply: number,
   motif: TacticalMotifInstance['motif'],
   attacker: string,
-  targets: readonly string[]
+  targets: readonly string[],
+  overrides: Partial<TacticalMotifInstance> = {}
 ): TacticalMotifInstance {
   return {
     id,
     ply,
     motif,
     squares: { attacker, targets },
-    geometryEvidence: evidence('chess-rule', [ply], 'fixture motif')
+    motifInstanceKey: motifInstanceKeyFor(motif, attacker, targets, undefined),
+    // Defaults to "new on this ply" so existing fixtures keep describing a
+    // motif the move introduced; a test that needs a pre-existing pattern
+    // passes firstSeenPly explicitly.
+    firstSeenPly: ply,
+    geometryEvidence: evidence('chess-rule', [ply], 'fixture motif'),
+    ...overrides
   };
 }
 

@@ -1,5 +1,6 @@
 import type { StoryArchetype, StoryPlan } from '../story/types';
 import type { GameAnalysis } from '../analysis/types';
+import type { TerminationKind } from '../pgn/types';
 import type { RenderDims } from '../render/coords';
 import type { Ctx2D } from '../render/Ctx2D';
 
@@ -52,34 +53,70 @@ const ARCHETYPE_COLOR_ORDER: Readonly<Record<StoryArchetype, number>> = {
 };
 
 /**
- * Pure: (StoryPlan, GameAnalysis) -> HookContent | null, per the approved
- * Phase 11 hierarchy —
- *   Tier 1: story.archetypeSignals non-empty -> the existing primary
- *     archetype (ARCHETYPE_COLOR_ORDER tie-break, same resolution the app
- *     already uses — never a new hook-specific priority rule).
- *   Tier 2: otherwise, the final analyzed ply's own evaluation is
- *     kind==='terminal' -> the existing terminal result label
- *     (Checkmate/Stalemate/Draw, same three cases state/moments.ts's own
- *     terminalLabel distinguishes).
- *   Tier 3: neither holds -> null (no hook; e.g. Quiet, and Promotion
- *     race's own analysis ends at a plain evaluation, never a terminal
- *     one, which is exactly why archetype must be checked first).
- * Deliberately does NOT reuse terminalLabel's own 'Terminal' catch-all
- * fallback: that fallback is dead code in its real caller (only ever
- * invoked once a terminal-result-highlight Moment already exists, which
- * itself requires a terminal evaluation), but the hook's own Tier 2 is
- * reached whenever Tier 1 misses, terminal or not — so it must gate on
- * ev.kind==='terminal' explicitly and fall through to Tier 3 rather than
- * ever showing a bare "Terminal" placeholder.
+ * Phase 15 — the hook for an off-board ending, when the ending is itself the
+ * story. Only the endings whose wording is unambiguous get a label; anything
+ * else falls through rather than inventing one.
+ */
+const TERMINATION_HOOK: Partial<Record<TerminationKind, string>> = {
+  checkmate: 'CHECKMATE',
+  stalemate: 'STALEMATE',
+  resignation: 'RESIGNATION',
+  timeout: 'TIMEOUT',
+  'timeout-vs-insufficient-material': 'DRAWN ON TIME',
+  'insufficient-material': 'DRAW',
+  agreement: 'DRAW',
+  repetition: 'DRAW',
+  'fifty-move': 'DRAW'
+};
+
+/**
+ * Phase 15 — hook selection now consults the resolved GameOutcome and the
+ * story's own leadArchetype instead of taking whichever archetype happened
+ * to sort first.
+ *
+ * The old Tier 1 was `archetypeSignals.length > 0 -> archetype label`,
+ * unconditionally and ahead of every other consideration. A game that ended
+ * drawn on time while one side held a forced mate was therefore titled by
+ * whichever pawn had promoted along the way — a true fact about the game,
+ * presented as though it were what the game was about.
+ *
+ * The new order:
+ *   Tier 1  a LEADING archetype (one that contains the story's own trigger
+ *           and reaches its payoff) — genuinely archetype-led games keep
+ *           exactly the hook they had.
+ *   Tier 2  the outcome, when it is known. A result the pipeline can name is
+ *           always a better title than a supporting motif.
+ *   Tier 3  a supporting archetype, when nothing about the ending is known.
+ *   Tier 4  null.
  */
 export function selectHook(story: StoryPlan, analysis: GameAnalysis): HookContent | null {
-  if (story.archetypeSignals.length > 0) {
-    const primary = [...story.archetypeSignals].sort(
-      (a, b) => ARCHETYPE_COLOR_ORDER[a.archetype] - ARCHETYPE_COLOR_ORDER[b.archetype]
-    )[0]!;
-    return { text: ARCHETYPE_LABEL[primary.archetype].toUpperCase() };
+  if (story.leadArchetype !== null) {
+    return { text: ARCHETYPE_LABEL[story.leadArchetype].toUpperCase() };
   }
 
+  const outcome = story.outcome;
+  if (outcome.onBoard) {
+    const ev = outcome.finalEvaluation;
+    if (ev.kind === 'terminal') {
+      if (ev.result === 'draw') {
+        return { text: (ev.drawReason === 'stalemate' ? 'Stalemate' : 'Draw').toUpperCase() };
+      }
+      return { text: 'CHECKMATE' };
+    }
+  }
+
+  const fromTermination = TERMINATION_HOOK[outcome.termination];
+  if (fromTermination !== undefined) {
+    return { text: fromTermination };
+  }
+
+  if (story.supportingArchetypes.length > 0) {
+    const primary = [...story.supportingArchetypes].sort((a, b) => ARCHETYPE_COLOR_ORDER[a] - ARCHETYPE_COLOR_ORDER[b])[0]!;
+    return { text: ARCHETYPE_LABEL[primary].toUpperCase() };
+  }
+
+  // Retained fallback: a terminal position that GameOutcome somehow did not
+  // classify still yields the same three labels this function always gave.
   const finalPly = analysis.plies[analysis.plies.length - 1];
   const ev = finalPly?.evaluationAfter;
   if (ev && ev.kind === 'terminal') {

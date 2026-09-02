@@ -1,5 +1,6 @@
-import type { PieceId } from '../pgn/types';
+import type { PieceId, TerminationKind } from '../pgn/types';
 import type { Evidence } from '../understanding/types';
+import type { GameOutcome, GameResult } from './gameOutcome';
 
 /**
  * Phase 2.3 — Story Engine data model.
@@ -54,7 +55,14 @@ export interface StoryBeat {
 // Central conflict
 // ============================================================
 
-export type CausalLinkType = 'same-sequence' | 'multi-move-consequence' | 'threat-refutation';
+export type CausalLinkType =
+  | 'same-sequence'
+  | 'multi-move-consequence'
+  | 'threat-refutation'
+  /** Phase 15 — a forced mate stood for the same side across this ply. */
+  | 'mate-transition-continuity'
+  /** Phase 15 — the chain arrived at a genuinely terminal position. */
+  | 'terminal-arrival';
 
 export interface CausalLink {
   readonly ply: number;
@@ -68,9 +76,77 @@ export interface CentralConflict {
   readonly causalChain: readonly CausalLink[];
   /** Ranked TurningPoint ids, excluding the winner and any turning point absorbed into causalChain. */
   readonly secondaryConflicts: readonly string[];
+  /**
+   * Phase 15 — the directional chain this conflict sits at the centre of.
+   * `causalChain` above is retained unchanged (it is the flat union of
+   * antecedents and consequents) so existing consumers keep working; new
+   * consumers should read this instead, because it is the only one that
+   * knows which direction a link points and where the story ends up.
+   */
+  readonly consequenceChain: ConsequenceChain;
+  /** Gate 2's verdict. See storyCandidates.ts. */
+  readonly tier: StoryTier;
 }
 
-export type NoConflictReason = 'no-turning-points' | 'below-significance-floor';
+export type NoConflictReason =
+  | 'no-turning-points'
+  | 'below-significance-floor'
+  /** Phase 15 — events existed, but none survived Gate 1's consequence/persistence tests. */
+  | 'no-admissible-candidate'
+  /**
+   * Phase 15 — a result is asserted that nothing observable supports: no
+   * terminal position, no termination reason, and a final position that does
+   * not look decided. Claiming a story here would be narrating a game whose
+   * ending we cannot see.
+   */
+  | 'unsupported-outcome';
+
+// ============================================================
+// Consequence chain and payoff (Phase 15)
+// ============================================================
+
+/**
+ * Where a story's consequences come to rest.
+ *
+ * The previous model had no such concept: consequence range was
+ * `max(evaluationConsequence.atPly, materialConsequence.atPly,
+ * multiMoveConsequence.endPly, climaxPly)`, all of which are local to the
+ * move, so a story could never reach the move that actually ended the game.
+ * Games whose mate was 3 plies after the climax simply had no consequence
+ * beat at all, and the mate arrived as an unrelated terminal annotation.
+ */
+export type PayoffTerminus =
+  | { readonly kind: 'checkmate'; readonly atPly: number }
+  | { readonly kind: 'stalemate'; readonly atPly: number }
+  | { readonly kind: 'material-settled'; readonly atPly: number; readonly netMaterialChange: number }
+  | { readonly kind: 'eval-settled'; readonly atPly: number; readonly finalSwingCp: number }
+  /**
+   * The game ended off the board — resignation, timeout, agreement. Carries
+   * the result and termination so a consumer can state BOTH what the board
+   * said and what the clock/players decided, which is the only honest way to
+   * narrate a game that ended drawn while one side held a forced mate.
+   */
+  | { readonly kind: 'off-board-result'; readonly result: GameResult; readonly termination: TerminationKind }
+  | { readonly kind: 'unresolved' };
+
+export interface ConsequenceChain {
+  readonly triggerPly: number;
+  /** Strictly before triggerPly, ascending. */
+  readonly antecedents: readonly CausalLink[];
+  /** Strictly after triggerPly, ascending. */
+  readonly consequents: readonly CausalLink[];
+  readonly payoff: PayoffTerminus;
+  /**
+   * True only when the consequents actually arrive at the game's final ply.
+   * This is what Gate 2 partitions on — an off-board ending does NOT make
+   * every candidate reach the result, or the tiering would be meaningless.
+   */
+  readonly reachesResult: boolean;
+  readonly evidence: Evidence;
+}
+
+/** Gate 2's partition. A always outranks B, which always outranks C. */
+export type StoryTier = 'A' | 'B' | 'C';
 
 // ============================================================
 // Move retention
@@ -154,6 +230,39 @@ export const DEFAULT_STORY_SETTINGS: StorySettings = {
 // Top-level output
 // ============================================================
 
+// ============================================================
+// Confidence (Phase 15)
+// ============================================================
+
+/**
+ * Two distinct states, deliberately NOT collapsed into one number:
+ *
+ *   'none'  — no meaningful cinematic story. Structural, not probabilistic:
+ *             either nothing survived Gate 1, or the recorded result is
+ *             unsupported by anything observable in the game.
+ *   'low'   — a strong event exists, but the evidence for a CAUSAL claim
+ *             about it does not. The story is told with weaker wording.
+ *   'medium'/'high' — increasing evidential support.
+ *
+ * `causalClaimAllowed` is the single gate on narration of the form
+ * "X led to Y". It is false unless all four of its preconditions hold, so a
+ * caption layer can never assemble that sentence from data that does not
+ * support it.
+ */
+export type ConfidenceLevel = 'none' | 'low' | 'medium' | 'high';
+
+export interface StoryConfidence {
+  readonly level: ConfidenceLevel;
+  /** True only when mechanism is verified, resolution corroborated, consequents non-empty, and trigger/payoff are linked. */
+  readonly causalClaimAllowed: boolean;
+  readonly mechanismVerified: boolean;
+  readonly resolutionCorroborated: boolean;
+  readonly hasConsequents: boolean;
+  readonly reachesResult: boolean;
+  /** Short audit strings — never display copy. */
+  readonly reasons: readonly string[];
+}
+
 export interface StoryPlan {
   readonly schemaVersion: typeof STORY_SCHEMA_VERSION;
   readonly centralConflict: CentralConflict | null;
@@ -163,8 +272,20 @@ export interface StoryPlan {
   /** One entry per ply, ascending, covering every ply — 'pruned' is a label, never a deletion. */
   readonly moveTreatment: readonly { readonly ply: number; readonly treatment: MoveTreatment }[];
   readonly archetypeSignals: readonly ArchetypeSignal[];
+  /**
+   * Phase 15 — the archetype (if any) entitled to own the game's headline.
+   * An archetype leads only when it contains the selected trigger AND its
+   * own evidence reaches the payoff; otherwise it is supporting. Previously
+   * every archetype was equal, and a 112-ply pawn-journey span could take
+   * the caption and the hook away from the actual central conflict.
+   */
+  readonly leadArchetype: StoryArchetype | null;
+  readonly supportingArchetypes: readonly StoryArchetype[];
   readonly pieceContributions: readonly PieceContribution[];
   readonly explanationOpportunities: readonly ExplanationOpportunity[];
+  readonly confidence: StoryConfidence;
+  /** Phase 15 — resolved once, first, and consulted by every gate. */
+  readonly outcome: GameOutcome;
   readonly settings: StorySettings;
 }
 

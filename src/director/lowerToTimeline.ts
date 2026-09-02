@@ -245,7 +245,26 @@ export function buildCameraPlan(
       const holdEndMs = proposedHoldEndMs < sceneDurationMs ? proposedHoldEndMs : naturalHoldEndMs;
       keyframes.push({ atMs: holdEndMs, centerX, centerY, zoom: climaxZoom });
     } else {
-      keyframes.push({ atMs: naturalHoldEndMs, centerX, centerY, zoom: climaxZoom });
+      // Phase 15 — reserve the same reset tail the terminal branches above
+      // already reserve.
+      //
+      // When the selected climax ply is ALSO the game's last ply, its own
+      // dwell time runs all the way to sceneDurationMs, so the hold-end
+      // keyframe and the final unconditional reset land on the same
+      // timestamp and the camera never actually returns to full board: the
+      // Phase 12A freeze query at sceneDurationMs - 1 reads the full climax
+      // zoom, and the exported video ends frozen mid-zoom. That degenerate
+      // case is called out in the zero-gap branch's own comment above as
+      // pre-existing and previously unreachable; the Phase 15 story
+      // selection can now reach it for a non-terminal game whose story is
+      // its final move.
+      //
+      // Clamping only ever moves the hold END earlier, never the zoom-in,
+      // and only when the hold would otherwise overrun the reset tail — so
+      // every game with room to spare keeps a byte-identical camera plan.
+      const latestHoldEndMs = sceneDurationMs - TERMINAL_ZOOM_OUT_MS;
+      const holdEndMs = naturalHoldEndMs > latestHoldEndMs && latestHoldEndMs > atMs ? latestHoldEndMs : naturalHoldEndMs;
+      keyframes.push({ atMs: holdEndMs, centerX, centerY, zoom: climaxZoom });
     }
   }
   keyframes.push({ atMs: sceneDurationMs, centerX: 4, centerY: 4, zoom: 1 });

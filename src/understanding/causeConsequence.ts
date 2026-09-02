@@ -15,6 +15,7 @@ import type {
   TurningPointKind
 } from './types';
 import { boardFromFen, materialBalance } from './geometry';
+import { verifyMechanism } from './mechanismVerification';
 
 function moverRelativeCp(evaluation: Evaluation, mover: Color): number {
   const white = toComparableCp(evaluation);
@@ -76,34 +77,75 @@ export function buildBestAlternativeRecord(
   };
 }
 
-function pickMechanism(
-  motifsForPly: readonly TacticalMotifInstance[],
-  deliversCheck: boolean,
-  deliversMate: boolean,
-  swingForMoverCp: number
-): CauseConsequenceRecord['mechanism'] {
-  if (motifsForPly.length > 0) return motifsForPly[0]!.motif;
-  if (deliversCheck || deliversMate) return 'king-safety';
-  if (Math.abs(swingForMoverCp) >= 50) return 'positional';
-  return null;
+/**
+ * Phase 15 — every resolution label now requires evidence of its OWN kind,
+ * not merely a large evaluation swing.
+ *
+ * The bug this fixes: 'repelled' was assigned from
+ * `moverRelativeSwingAtConsequence <= -100` alone. A move that LOSES half a
+ * queen produces exactly that number, so outright blunders were labelled
+ * "the threat being repelled" — a defensive claim that the record's own
+ * threatsRemoved actively contradicted. state/moments.ts had to carry a
+ * caption-time patch (resolutionIsUnsupported) to suppress the phrase after
+ * the fact; that check is promoted here into a precondition on the value
+ * itself, so no consumer can ever see an uncorroborated 'repelled' again.
+ *
+ * Each label's required corroboration:
+ *   forced-mate        terminal mate for the mover, or a mate evaluation at
+ *                      the consequence that favours the mover
+ *   drawn              terminal draw (checked before the swing bands: a
+ *                      stalemate save reads as a large POSITIVE swing and
+ *                      would otherwise mislabel a draw as a decisive win)
+ *   decisive-advantage the evaluation itself moved decisively for the mover
+ *   material-gain      a real mover-relative material gain at the consequence
+ *   repelled           at least one threat was actually removed
+ *   unresolved         the existing safe fallback — asserts nothing
+ */
+/**
+ * Mover-relative swing at which a "defensive success" reading stops being
+ * honest: roughly three pawns lost by the side that moved.
+ */
+const COLLAPSE_CP = -300;
+
+export interface ResolutionCorroboration {
+  readonly threatsRemovedCount: number;
+  /** True when a mate exists at the consequence and it favours the mover. */
+  readonly mateFavoursMoverAtConsequence: boolean;
 }
 
 function resolutionFor(
   moverRelativeSwingAtConsequence: number,
   materialNetForMover: number,
   endsInMateForMover: boolean,
-  endsInDraw: boolean
+  endsInDraw: boolean,
+  corroboration: ResolutionCorroboration
 ): CauseConsequenceRecord['resolution'] {
-  if (endsInMateForMover) return 'forced-mate';
-  // Checked ahead of the swing-based bands on purpose: a defending side's
-  // stalemate save reads as a large POSITIVE mover-relative swing (losing
-  // -> drawn), which would otherwise satisfy the >= 300 "decisive
-  // advantage" check below and mislabel a draw as a win.
+  if (endsInMateForMover || corroboration.mateFavoursMoverAtConsequence) return 'forced-mate';
   if (endsInDraw) return 'drawn';
   if (moverRelativeSwingAtConsequence >= 300) return 'decisive-advantage';
   if (materialNetForMover >= 200) return 'material-gain';
-  if (moverRelativeSwingAtConsequence <= -100) return 'repelled';
+  // 'repelled' describes a defensive success. Removing a threat is the
+  // necessary evidence, but it is not sufficient: when the same move also
+  // collapses the mover's own position, the defensive fact is no longer the
+  // dominant one, and narrating only it produces exactly the reassuring,
+  // false explanation this phase exists to remove ("the threat being
+  // repelled" for a move that hands the game away). Beyond COLLAPSE_CP the
+  // record has two facts and cannot honestly assert either as THE
+  // resolution, so it asserts neither.
+  if (moverRelativeSwingAtConsequence <= -100 && moverRelativeSwingAtConsequence > COLLAPSE_CP && corroboration.threatsRemovedCount > 0) {
+    return 'repelled';
+  }
   return 'unresolved';
+}
+
+/**
+ * Whether a mate on the board at the consequence belongs to the mover.
+ * Evaluations are white-relative (see analysis/types.ts), so a positive
+ * mateIn is White's mate.
+ */
+function mateFavoursMover(evaluation: Evaluation, mover: Color): boolean {
+  if (evaluation.kind !== 'mate') return false;
+  return mover === 'w' ? evaluation.mateIn > 0 : evaluation.mateIn < 0;
 }
 
 export interface CauseConsequenceInputs {
@@ -145,6 +187,20 @@ export function buildCauseConsequenceRecord(inputs: CauseConsequenceInputs): Cau
       (ply.sideToMove === 'b' && consequencePly.evaluationAfter.result === 'black-wins'));
   const endsInDraw = consequencePly.evaluationAfter.kind === 'terminal' && consequencePly.evaluationAfter.result === 'draw';
 
+  // Phase 15 — the mechanism is verified here, upstream of every consumer,
+  // so no selector or caption can ever see an unverified one.
+  const mechanismVerification = verifyMechanism({
+    ply,
+    motifsForPly,
+    threatsCreatedHere,
+    sequence,
+    allPliesByNumber,
+    deliversCheck: signals.deliversCheck,
+    deliversMate: signals.deliversMate,
+    materialNetForMover,
+    swingAtConsequence
+  });
+
   return {
     id: `cc-${ply.ply}`,
     ply: ply.ply,
@@ -157,7 +213,9 @@ export function buildCauseConsequenceRecord(inputs: CauseConsequenceInputs): Cau
     },
     threatsCreated: threatsCreatedHere.map((t) => t.id),
     threatsRemoved: threatsResolvedHere.map((t) => t.id),
-    mechanism: pickMechanism(motifsForPly, signals.deliversCheck, signals.deliversMate, ply.swingForMoverCp),
+    mechanism: mechanismVerification.mechanism,
+    mechanismVerified: mechanismVerification.verified,
+    ...(mechanismVerification.motifId !== undefined ? { mechanismMotifId: mechanismVerification.motifId } : {}),
     bestAlternative,
     ...(reply
       ? {
@@ -172,11 +230,14 @@ export function buildCauseConsequenceRecord(inputs: CauseConsequenceInputs): Cau
     evaluationConsequence: { atPly: consequenceEndPly, swingCp: swingAtConsequence },
     materialConsequence: { atPly: consequenceEndPly, netMaterialChange: materialNetForMover },
     ...(sequence ? { multiMoveConsequence: { sequenceId: sequence.id, endPly: sequence.endPly } } : {}),
-    resolution: resolutionFor(swingAtConsequence, materialNetForMover, endsInMateForMover, endsInDraw),
+    resolution: resolutionFor(swingAtConsequence, materialNetForMover, endsInMateForMover, endsInDraw, {
+      threatsRemovedCount: threatsResolvedHere.length,
+      mateFavoursMoverAtConsequence: mateFavoursMover(consequencePly.evaluationAfter, ply.sideToMove)
+    }),
     evidence: {
       basis: 'engine-eval',
       sourcePlies: sequence ? sequence.plies : [ply.ply],
-      note: `assembled from ply ${ply.ply}${sequence ? ` through sequence ${sequence.id} ending at ply ${sequence.endPly}` : ''}`
+      note: `assembled from ply ${ply.ply}${sequence ? ` through sequence ${sequence.id} ending at ply ${sequence.endPly}` : ''}; mechanism ${mechanismVerification.mechanism ?? 'withheld'}`
     }
   };
 }

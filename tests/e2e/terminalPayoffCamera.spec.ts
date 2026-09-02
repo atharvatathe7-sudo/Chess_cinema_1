@@ -247,15 +247,19 @@ test("Scholar's Mate: zero-gap terminal payoff — the existing climax hold is e
   const cam = await analyzeCameraPlan(page, SCHOLARS_MATE);
   expect(cam.finalPositionIsTerminal).toBe(true);
   expect(cam.climaxAtMs).toBe(1200);
-  expect(cam.terminalPlyAtMs).toBe(3300);
-  expect(cam.keyframes).toHaveLength(4);
-  expect(cam.keyframes[2]).toEqual({ atMs: 3400, centerX: 6, centerY: 1.5, zoom: 1.8 });
+  // Phase 15 — the mate is now the story's own resolution beat rather than a
+  // trailing move outside it, so it is paced as a beat ('held') and starts
+  // later. The zero-gap PROPERTY under test is unchanged and asserted below:
+  // the camera never returns to full board between the climax and the mate.
+  expect(cam.terminalPlyAtMs).toBe(3700);
+  expect(cam.keyframes.some((k) => k.atMs > 1200 && k.atMs < 5600 && k.zoom < 1.8)).toBe(false);
+  expect(cam.keyframes[2]).toEqual({ atMs: 3300, centerX: 6, centerY: 1.5, zoom: 1.8 });
 
   // Deterministic ground truth: the camera is still at full climax zoom
-  // when the actual mate-delivering move (Qxf7#, 3300-3600ms) begins, and
-  // stays meaningfully zoomed for a real portion of it — unlike
-  // pre-Phase-13B behavior, where zoom was already ~1.1 by the midpoint.
-  const [atMoveStart, atMoveMid50] = await sampleCamera(page, cam.keyframes, [3300, 3350]);
+  // when the actual mate-delivering move (Qxf7#) begins, and stays
+  // meaningfully zoomed for a real portion of it — unlike pre-Phase-13B
+  // behavior, where zoom was already ~1.1 by the midpoint.
+  const [atMoveStart, atMoveMid50] = await sampleCamera(page, cam.keyframes, [3700, 3750]);
   expect(atMoveStart!.zoom).toBe(1.8);
   expect(atMoveMid50!.zoom).toBeGreaterThan(1.5);
 
@@ -294,11 +298,45 @@ const GAP_CASES: readonly GapCase[] = [
   // hold at zoom=1 in between (see the approved Phase 13A/13B keyframe
   // shape) — this is the one point in time within the whole gap that is
   // mathematically guaranteed to be exactly full-board zoom, and it falls
-  // inside a real intervening consequence move's own MoveBeat window in
-  // both canonical games (Evergreen's Bd7+, Stalemate's Qxc8).
-  { name: 'Evergreen', pgn: EVERGREEN, expectedClimaxAtMs: 12850, expectedTerminalPlyAtMs: 16750, expectedClimaxHoldEndMs: 14950, consequenceSampleMs: 16350 },
-  { name: 'Stalemate', pgn: STALEMATE, expectedClimaxAtMs: 5600, expectedTerminalPlyAtMs: 9500, expectedClimaxHoldEndMs: 7700, consequenceSampleMs: 9100 }
+  // inside a real intervening consequence move's own MoveBeat window.
+  //
+  // Phase 15 — Stalemate is no longer a GAP case and has moved to the
+  // zero-gap test below. Its story is now the move that forces the
+  // stalemate (the ply immediately before it) rather than an unrelated
+  // earlier swing, so there are no intervening consequence moves left to
+  // stay full-board through. That change is the point of the phase, not a
+  // regression: the payoff is now the story's own resolution.
+  //
+  // Evergreen's absolute timings moved because the mate is now the story's
+  // own resolution beat (paced as a beat, not as a trailing compressible
+  // move). Its keyframe SHAPE — hold, drop to full board across the
+  // consequence moves, re-engage for the mate — is unchanged.
+  { name: 'Evergreen', pgn: EVERGREEN, expectedClimaxAtMs: 12850, expectedTerminalPlyAtMs: 20310, expectedClimaxHoldEndMs: 14950, consequenceSampleMs: 19910 }
 ];
+
+/**
+ * Phase 15 — Stalemate joins Scholar's Mate as a zero-gap payoff: the
+ * selected trigger is adjacent to the terminal move, so the climax hold
+ * simply extends over it and the camera never drops to full board in
+ * between.
+ */
+test('Stalemate: zero-gap terminal payoff — the climax hold extends over the stalemate, with no full-board dip in between', async ({ page }) => {
+  const cam = await analyzeCameraPlan(page, STALEMATE);
+  expect(cam.finalPositionIsTerminal).toBe(true);
+  expect(cam.climaxAtMs).toBe(5100);
+  expect(cam.terminalPlyAtMs).toBe(7600);
+
+  // The defining zero-gap property: no keyframe between the climax and the
+  // terminal move returns to (or below) full-board framing.
+  expect(cam.keyframes.some((k) => k.atMs > cam.climaxAtMs! && k.atMs < cam.terminalPlyAtMs! && k.zoom < 1.8)).toBe(false);
+
+  const [atTerminalStart, atTerminalPlus50] = await sampleCamera(page, cam.keyframes, [7600, 7650]);
+  expect(atTerminalStart!.zoom, 'camera must be at full climax zoom as the stalemate move begins').toBe(1.8);
+  expect(atTerminalPlus50!.zoom, 'camera must remain meaningfully zoomed into the stalemate move').toBeGreaterThan(1.5);
+
+  // Phase 12A freeze anchor is unaffected.
+  expect(Math.abs(cam.camAtFreeze.zoom - 1)).toBeLessThan(1e-6);
+});
 
 for (const gc of GAP_CASES) {
   test(`${gc.name}: gap terminal payoff — intervening consequence moves stay full-board, camera re-engages right before the terminal move`, async ({ page }) => {
@@ -366,13 +404,17 @@ test('Promotion race: no terminal payoff — remains byte-identical to the pre-P
   const cam = await analyzeCameraPlan(page, PROMOTION_RACE);
   expect(cam.finalPositionIsTerminal).toBe(false);
   expect(cam.terminalPlyAtMs).toBeNull();
-  expect(cam.climaxAtMs).toBe(3100);
+  // Phase 15 — the selected climax and its framing moved with the new
+  // selection; the PROPERTY under test is that a non-terminal game still
+  // gets no terminal re-engagement episode at all (asserted by
+  // terminalPlyAtMs === null above and the plain 5-keyframe shape here).
+  expect(cam.climaxAtMs).toBe(4300);
   expect(cam.keyframes).toEqual([
     { atMs: 0, centerX: 4, centerY: 4, zoom: 1 },
-    { atMs: 1900, centerX: 4, centerY: 4, zoom: 1 },
-    { atMs: 3100, centerX: 7, centerY: 6, zoom: 1.8 },
-    { atMs: 5200, centerX: 7, centerY: 6, zoom: 1.8 },
-    { atMs: 5800, centerX: 4, centerY: 4, zoom: 1 }
+    { atMs: 3100, centerX: 4, centerY: 4, zoom: 1 },
+    { atMs: 4300, centerX: 7, centerY: 7, zoom: 1.8 },
+    { atMs: 6200, centerX: 7, centerY: 7, zoom: 1.8 },
+    { atMs: 6400, centerX: 4, centerY: 4, zoom: 1 }
   ]);
 
   const webmBytes = await exportVideoBytes(page);

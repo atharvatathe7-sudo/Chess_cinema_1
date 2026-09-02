@@ -6,8 +6,10 @@ import { selectCentralConflict } from './centralConflict';
 import { buildBeats } from './beats';
 import { classifyMoveTreatment } from './retention';
 import { buildExplanationOpportunities } from './bestAlternative';
-import { buildArchetypeSignals } from './archetypes';
+import { buildArchetypeSignals, resolveArchetypeRoles } from './archetypes';
 import { buildPieceContributions } from './pieceContribution';
+import { resolveGameOutcome } from './gameOutcome';
+import { buildConfidence } from './confidence';
 
 /**
  * Top-level Phase 2.3 orchestration: (GameRecord, GameAnalysis,
@@ -28,6 +30,10 @@ export function buildStoryPlan(
   understanding: GameUnderstanding,
   settings: StorySettings = DEFAULT_STORY_SETTINGS
 ): StoryPlan {
+  // GATE 0 — resolved first, before anything else, because every later gate
+  // consults it. See story/gameOutcome.ts.
+  const outcome = resolveGameOutcome(game, analysis);
+
   if (understanding.plies.length === 0) {
     return {
       schemaVersion: STORY_SCHEMA_VERSION,
@@ -36,8 +42,12 @@ export function buildStoryPlan(
       beats: [],
       moveTreatment: [],
       archetypeSignals: [],
+      leadArchetype: null,
+      supportingArchetypes: [],
       pieceContributions: [],
       explanationOpportunities: [],
+      confidence: buildConfidence(null, understanding, 'no-turning-points'),
+      outcome,
       settings
     };
   }
@@ -53,12 +63,15 @@ export function buildStoryPlan(
     }
   }
 
-  const { centralConflict, noConflictReason } = selectCentralConflict(understanding, settings);
+  const { centralConflict, noConflictReason } = selectCentralConflict(understanding, analysis, outcome, settings);
   const beats = buildBeats(centralConflict, understanding);
   const archetypeSignals = buildArchetypeSignals(game, analysis, understanding, settings, beats);
   const moveTreatment = classifyMoveTreatment(understanding, beats, archetypeSignals);
   const explanationOpportunities = buildExplanationOpportunities(understanding);
   const pieceContributions = buildPieceContributions(game, understanding, beats, archetypeSignals);
+
+  const { leadArchetype, supportingArchetypes } = resolveArchetypeRoles(archetypeSignals, centralConflict, outcome);
+  const confidence = buildConfidence(centralConflict, understanding, noConflictReason);
 
   return {
     schemaVersion: STORY_SCHEMA_VERSION,
@@ -67,8 +80,12 @@ export function buildStoryPlan(
     beats,
     moveTreatment,
     archetypeSignals,
+    leadArchetype,
+    supportingArchetypes,
     pieceContributions,
     explanationOpportunities,
+    confidence,
+    outcome,
     settings
   };
 }

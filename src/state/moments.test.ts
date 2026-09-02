@@ -1,3 +1,5 @@
+import { noStoryConfidence, unknownOutcome } from '../story/storyFixtures';
+import { motifInstanceKeyFor } from '../understanding/motifs';
 import { describe, expect, it } from 'vitest';
 import { ChessJsEngine } from '../chess/ChessJsEngine';
 import { parsePgn } from '../pgn/parsePgn';
@@ -19,6 +21,7 @@ import { DEFAULT_STORY_SETTINGS, STORY_SCHEMA_VERSION, type StoryBeat, type Stor
 import type { MoveBeat, Timeline } from '../timeline/types';
 import { createInitialState, type AppState } from './AppState';
 import { Store } from './store';
+import type { CinematicMoment } from './moments';
 import { deriveCinematicMoments, goToNextMoment, goToPreviousMoment } from './moments';
 
 /**
@@ -155,8 +158,12 @@ function storyFixture(overrides: { beats?: readonly StoryBeat[] } = {}): StoryPl
     beats: overrides.beats ?? [],
     moveTreatment: [],
     archetypeSignals: [],
+    leadArchetype: null,
+    supportingArchetypes: [],
     pieceContributions: [],
     explanationOpportunities: [],
+    confidence: noStoryConfidence(),
+    outcome: unknownOutcome(),
     settings: DEFAULT_STORY_SETTINGS
   };
 }
@@ -189,6 +196,8 @@ function motifInstance(
     ply,
     motif,
     squares,
+    motifInstanceKey: motifInstanceKeyFor(motif, squares.attacker, squares.targets, squares.throughSquare),
+    firstSeenPly: ply,
     geometryEvidence: emptyEvidence([ply]),
     ...(significant ? { significanceEvidence: emptyEvidence([ply]) } : {})
   };
@@ -207,6 +216,9 @@ function causeConsequence(
     positionBefore: 'startpos',
     movePlayed: overrides.movePlayed ?? { san: 'm', uci: 'e2e4' },
     immediateChange: { evaluationDelta: { swingCp: 0, swingForMoverCp: 0 }, materialDelta: 0, motifsTriggered: overrides.motifsTriggered ?? [] },
+    // Phase 15 — a named mechanism in a fixture is a verified one by
+    // construction; mechanism === null means there is no claim to verify.
+    mechanismVerified: mechanism !== null,
     threatsCreated: [],
     threatsRemoved: overrides.threatsRemoved ?? [],
     mechanism,
@@ -347,19 +359,53 @@ describe('deriveCinematicMoments', () => {
     }
   });
 
-  it('H: KIND_ORDER priority is respected for the merged label (terminal-result-highlight wins over central-conflict-highlight), and the lower-priority Climax narrative is preserved as narratives[1] (Phase 2.8)', () => {
+  /**
+   * Phase 15 supersedes the previous version of this case, which asserted
+   * that an overlapping terminal-result-highlight and central-conflict-
+   * highlight merge into ONE moment with the terminal label winning.
+   *
+   * That merge only ever happened by accident: before Phase 15 a
+   * central-conflict highlight covered the climax ply alone, so it rarely
+   * overlapped the ending. Now that the story owns its payoff, the highlight
+   * spans climax -> resolution and the two ALWAYS overlap — so merging would
+   * silently relabel every decisive game's climax caption as "Checkmate" and
+   * demote the Climax to a secondary narrative.
+   *
+   * The climax and the payoff are two beats of one story, so they are two
+   * moments. KIND_PRIORITY still orders every other merge group.
+   */
+  it('H: a terminal payoff keeps its own moment rather than absorbing the climax highlight (Phase 15)', () => {
     const timeline = timelineFromDurations([600, 600]);
     const plan = cinematicPlan([directive('central-conflict-highlight', 1, 2), directive('terminal-result-highlight', 2, 2, { kind: 'terminal' })]);
     const analysis = analysisEndingWith(2, { kind: 'terminal', result: 'white-wins' });
     const moments = deriveCinematicMoments(plan, timeline, analysis, EMPTY_UNDERSTANDING, EMPTY_STORY);
-    expect(moments).toHaveLength(1);
-    expect(moments[0]!.kind).toBe('terminal-result-highlight');
-    expect(moments[0]!.label).toBe('Checkmate');
-    expect(moments[0]!.reason).toBe('The game ended in checkmate.');
-    expect(moments[0]!.narratives).toEqual([
-      { label: 'Checkmate', reason: 'The game ended in checkmate.' },
-      { label: 'Climax', reason: 'The decisive moment of the game.' }
+
+    expect(moments).toHaveLength(2);
+    expect(moments.map((m) => m.kind)).toEqual(['central-conflict-highlight', 'terminal-result-highlight']);
+
+    const climax = moments[0]!;
+    expect(climax.label).toBe('Climax');
+    expect(climax.reason).toBe('The decisive moment of the game.');
+    expect(climax.narratives).toEqual([{ label: 'Climax', reason: 'The decisive moment of the game.' }]);
+
+    const payoff = moments[1]!;
+    expect(payoff.label).toBe('Checkmate');
+    expect(payoff.reason).toBe('The game ended in checkmate.');
+    expect(payoff.narratives).toEqual([{ label: 'Checkmate', reason: 'The game ended in checkmate.' }]);
+  });
+
+  it('H2: KIND_PRIORITY still decides the label for every other merge group', () => {
+    // A short archetype-track and a threat-refutation-arrow over the same
+    // plies still merge, with the higher-priority kind taking the label.
+    const timeline = timelineFromDurations([600, 600]);
+    const plan = cinematicPlan([
+      directive('threat-refutation-arrow', 1, 1),
+      directive('archetype-track', 1, 2, { kind: 'archetypeSignal', archetype: 'king-hunt' })
     ]);
+    const moments = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, EMPTY_UNDERSTANDING, EMPTY_STORY);
+    expect(moments).toHaveLength(1);
+    expect(moments[0]!.kind).toBe('archetype-track');
+    expect(moments[0]!.narratives.length).toBeGreaterThan(1);
   });
 
   it('I: no moment-worthy directives produces an empty array', () => {
@@ -1056,5 +1102,115 @@ describe('goToNextMoment / goToPreviousMoment', () => {
     const terminal = all[all.length - 1]!;
     expect(terminal.targetTimeMs).not.toBe(timeline.scenes[0]!.durationMs);
     expect(terminal.targetTimeMs).toBeLessThan(timeline.scenes[0]!.durationMs);
+  });
+});
+
+/**
+ * Phase 15 (M11) — a long archetype span must not take the caption away
+ * from the game's central conflict.
+ *
+ * The failure this covers: interval-overlap merging put a whole-game
+ * archetype-track and a single-ply central-conflict-highlight into one
+ * group, and because KIND_PRIORITY ranks archetype-track higher, the
+ * archetype won the caption. A game's one decisive moment was narrated as
+ * "a pawn advanced across the board before promoting".
+ */
+describe('archetype span must not swallow the central conflict (M11)', () => {
+  const analysis = QUIET_ANALYSIS;
+  const understanding = EMPTY_UNDERSTANDING;
+
+  function momentsFor(directives: readonly AnnotationDirective[], plyCount: number) {
+    const timeline = timelineFromDurations(Array.from({ length: plyCount }, () => 300));
+    return deriveCinematicMoments(cinematicPlan(directives), timeline, analysis, understanding, EMPTY_STORY);
+  }
+
+  it('keeps a central-conflict highlight as its own moment inside a long archetype span', () => {
+    const moments = momentsFor(
+      [
+        directive('archetype-track', 3, 115, { kind: 'archetypeSignal', archetype: 'pawn-journey' }),
+        directive('central-conflict-highlight', 62, 62, { kind: 'beat', id: 'beat-climax-62' })
+      ],
+      120
+    );
+
+    const kinds = moments.map((m) => m.kind);
+    expect(kinds).toContain('central-conflict-highlight');
+    // Both survive: the archetype is not suppressed, it just does not own
+    // the decisive moment's caption.
+    expect(kinds).toContain('archetype-track');
+
+    const climax = moments.find((m) => m.kind === 'central-conflict-highlight')!;
+    expect(climax.fromPly).toBe(62);
+    expect(climax.toPly).toBe(62);
+    expect(climax.label).toBe('Climax');
+  });
+
+  it('still merges a SHORT archetype span with an overlapping central conflict, as before', () => {
+    // The long-span rule is about whole-game ambience, not about archetypes
+    // in general — a tight archetype genuinely about the same moment keeps
+    // the existing merge behaviour.
+    const moments = momentsFor(
+      [
+        directive('archetype-track', 60, 64, { kind: 'archetypeSignal', archetype: 'forced-trap' }),
+        directive('central-conflict-highlight', 62, 62, { kind: 'beat', id: 'beat-climax-62' })
+      ],
+      70
+    );
+
+    expect(moments).toHaveLength(1);
+    expect(moments[0]!.narratives.length).toBeGreaterThan(1);
+  });
+
+  it('does not disturb a long archetype span when there is no central conflict to protect', () => {
+    const moments = momentsFor([directive('archetype-track', 3, 115, { kind: 'archetypeSignal', archetype: 'pawn-journey' })], 120);
+    expect(moments).toHaveLength(1);
+    expect(moments[0]!.kind).toBe('archetype-track');
+  });
+});
+
+/**
+ * Phase 15 — export/drawCaptions.ts's activeMomentAt documents and relies on
+ * moment windows being non-overlapping ("the first interval containing
+ * logicalTimeMs is the only one that ever can"). Merging used to guarantee
+ * that for free; now that a terminal payoff is deliberately kept out of the
+ * climax's group, the invariant is maintained by clamping instead.
+ */
+describe('non-overlapping window invariant (M11)', () => {
+  it('trims a climax window so the payoff caption owns the payoff', () => {
+    const timeline = timelineFromDurations([600, 600, 600]);
+    const plan = cinematicPlan([
+      directive('central-conflict-highlight', 1, 3),
+      directive('terminal-result-highlight', 3, 3, { kind: 'terminal' })
+    ]);
+    const analysis = analysisEndingWith(3, { kind: 'terminal', result: 'white-wins' });
+    const moments = deriveCinematicMoments(plan, timeline, analysis, EMPTY_UNDERSTANDING, EMPTY_STORY);
+
+    expect(moments).toHaveLength(2);
+    const [climax, payoff] = moments as [CinematicMoment, CinematicMoment];
+    expect(climax.untilMs).toBe(payoff.atMs);
+    expect(climax.targetTimeMs).toBeLessThan(payoff.atMs);
+    expect(payoff.label).toBe('Checkmate');
+  });
+
+  it('leaves every moment window disjoint, for any directive set', () => {
+    const timeline = timelineFromDurations([400, 400, 400, 400, 400]);
+    const plan = cinematicPlan([
+      directive('threat-refutation-arrow', 1, 1),
+      directive('central-conflict-highlight', 2, 5),
+      directive('archetype-track', 3, 5, { kind: 'archetypeSignal', archetype: 'king-hunt' }),
+      directive('terminal-result-highlight', 5, 5, { kind: 'terminal' })
+    ]);
+    const analysis = analysisEndingWith(5, { kind: 'terminal', result: 'white-wins' });
+    const moments = deriveCinematicMoments(plan, timeline, analysis, EMPTY_UNDERSTANDING, EMPTY_STORY);
+
+    for (let i = 0; i + 1 < moments.length; i++) {
+      expect(moments[i]!.untilMs).toBeLessThanOrEqual(moments[i + 1]!.atMs);
+    }
+    // Every surviving moment still has a real, non-empty window.
+    for (const m of moments) {
+      expect(m.untilMs).toBeGreaterThan(m.atMs);
+      expect(m.targetTimeMs).toBeGreaterThanOrEqual(m.atMs);
+      expect(m.targetTimeMs).toBeLessThan(m.untilMs);
+    }
   });
 });

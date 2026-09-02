@@ -125,6 +125,22 @@ export interface TacticalMotifInstance {
     readonly targets: readonly string[];
     readonly throughSquare?: string;
   };
+  /**
+   * Phase 15 — geometric identity, shared by every ply on which the SAME
+   * pattern stands: motif kind + attacker + sorted targets + throughSquare.
+   * Deliberately a plain joined string, not a hash: this exists to answer
+   * one question ("is this pattern new on this ply, or was it already
+   * standing?") for mechanism verification, and is never persisted or used
+   * as a database key, so legibility in an Evidence.note beats compactness.
+   */
+  readonly motifInstanceKey: string;
+  /**
+   * The earliest ply in this game on which motifInstanceKey was observed.
+   * Equal to `ply` exactly when the pattern is genuinely new here — which is
+   * mechanismVerification's V2 test, and the thing that separates a motif
+   * the move created from a motif it merely stood next to.
+   */
+  readonly firstSeenPly: number;
   /** Stage 1 — always present, basis: 'chess-rule'. */
   readonly geometryEvidence: Evidence;
   /** Stage 2 — present only when engine data confirms the motif actually realized value. */
@@ -205,7 +221,20 @@ export interface CauseConsequenceRecord {
   };
   readonly threatsCreated: readonly string[];
   readonly threatsRemoved: readonly string[];
+  /**
+   * Phase 15 — null unless mechanismVerification.ts proved this mechanism
+   * materially participated. Previously this was whichever motif came first
+   * in board-scan order, with no participation test at all.
+   */
   readonly mechanism: TacticalMotif | 'king-safety' | 'positional' | null;
+  /**
+   * True exactly when `mechanism` is non-null and evidence-backed. Kept as
+   * its own field rather than being inferred from `mechanism !== null` so
+   * that consumers assert on the verification, not on a shape.
+   */
+  readonly mechanismVerified: boolean;
+  /** The TacticalMotifInstance id that passed verification, when motif-sourced. */
+  readonly mechanismMotifId?: string;
   readonly bestAlternative: BestAlternativeRecord;
   readonly opponentResponse?: {
     readonly ply: number;

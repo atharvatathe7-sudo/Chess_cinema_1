@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildStoryPlan } from './buildStoryPlan';
 import { STORY_SCHEMA_VERSION } from './types';
+import type { GameUnderstanding } from '../understanding/types';
 import { analysisFrom, causeConsequence, gameArc, gameFrom, move, plyAnalysis, plySemantics, plySignals, turningPoint, understandingFrom } from './storyFixtures';
 
 describe('buildStoryPlan', () => {
@@ -17,8 +18,32 @@ describe('buildStoryPlan', () => {
       beats: [],
       moveTreatment: [],
       archetypeSignals: [],
+      leadArchetype: null,
+      supportingArchetypes: [],
       pieceContributions: [],
       explanationOpportunities: [],
+      // Phase 15 — an empty game has no story, and says so structurally
+      // rather than through a low score.
+      confidence: {
+        level: 'none',
+        causalClaimAllowed: false,
+        mechanismVerified: false,
+        resolutionCorroborated: false,
+        hasConsequents: false,
+        reachesResult: false,
+        reasons: ['no-story: no-turning-points']
+      },
+      // GATE 0 still runs for an empty game: it resolves to "nothing is
+      // known", which is a real answer, not a placeholder.
+      outcome: {
+        result: null,
+        termination: 'absent',
+        onBoard: false,
+        finalEvaluation: { kind: 'cp', cp: 0 },
+        finalMaterialDiff: 0,
+        source: 'none',
+        confidence: 0
+      },
       settings: plan.settings
     });
   });
@@ -95,5 +120,88 @@ describe('buildStoryPlan', () => {
     const first = buildStoryPlan(game, analysis, understanding);
     const second = buildStoryPlan(game, analysis, understanding);
     expect(JSON.stringify(first)).toBe(JSON.stringify(second));
+  });
+});
+
+/**
+ * Phase 15 — structural invariants over whatever buildStoryPlan produces.
+ *
+ * These are the properties that must hold for EVERY game, not assertions
+ * about one fixture's expected output. They are the guardrails that stop a
+ * future change from quietly reintroducing a fabricated claim, and they are
+ * written so the same checks can be run over the whole real corpus.
+ */
+describe('StoryPlan invariants (Phase 15)', () => {
+  function assertInvariants(plan: ReturnType<typeof buildStoryPlan>, understanding: GameUnderstanding) {
+    // 12. No StoryPlan may contain an unverified mechanism.
+    for (const tp of understanding.turningPoints) {
+      const cc = tp.causeConsequence;
+      if (cc.mechanism !== null) {
+        expect(cc.mechanismVerified).toBe(true);
+      }
+      if (!cc.mechanismVerified) {
+        expect(cc.mechanism).toBeNull();
+      }
+    }
+
+    // A causal claim is never permitted without all four preconditions.
+    if (plan.confidence.causalClaimAllowed) {
+      expect(plan.confidence.mechanismVerified).toBe(true);
+      expect(plan.confidence.resolutionCorroborated).toBe(true);
+      expect(plan.confidence.hasConsequents).toBe(true);
+    }
+
+    // Abstention and a selected story are mutually exclusive, and 'none'
+    // confidence is reserved for abstention.
+    if (plan.centralConflict === null) {
+      expect(plan.noConflictReason).toBeDefined();
+      expect(plan.confidence.level).toBe('none');
+    } else {
+      expect(plan.confidence.level).not.toBe('none');
+    }
+
+    // An archetype may lead only when it contains the trigger and reaches
+    // the payoff; otherwise it is supporting, never both.
+    if (plan.leadArchetype !== null) {
+      expect(plan.supportingArchetypes).not.toContain(plan.leadArchetype);
+    }
+  }
+
+  it('holds for an empty game', () => {
+    const game = gameFrom([]);
+    const analysis = analysisFrom([]);
+    const understanding = understandingFrom({ plies: [] });
+    assertInvariants(buildStoryPlan(game, analysis, understanding), understanding);
+  });
+
+  it('holds for a quiet game with no turning points', () => {
+    const moves = [move(1, { pieceId: 'w-p-e2', from: 'e2', to: 'e4' }), move(2, { pieceId: 'b-p-e7', from: 'e7', to: 'e5' })];
+    const game = gameFrom(moves);
+    const analysis = analysisFrom([plyAnalysis(1), plyAnalysis(2)]);
+    const understanding = understandingFrom({
+      plies: [plySemantics(1, plySignals('w-p-e2')), plySemantics(2, plySignals('b-p-e7'))]
+    });
+    assertInvariants(buildStoryPlan(game, analysis, understanding), understanding);
+  });
+
+  it('never emits a "repelled" resolution with no threats removed, at plan level', () => {
+    // The single most damaging fabrication the benchmark surfaced, asserted
+    // as a property of the whole plan rather than of one function.
+    const moves = [move(1, { pieceId: 'w-p-e2', from: 'e2', to: 'e4' })];
+    const game = gameFrom(moves);
+    const analysis = analysisFrom([plyAnalysis(1)]);
+    const cc = causeConsequence(1, { resolution: 'unresolved', threatsRemoved: [] });
+    const understanding = understandingFrom({
+      plies: [plySemantics(1, plySignals('w-p-e2'))],
+      turningPoints: [turningPoint(1, 'decisive-swing', cc, 500)]
+    });
+
+    const plan = buildStoryPlan(game, analysis, understanding);
+    for (const tp of understanding.turningPoints) {
+      if (tp.causeConsequence.resolution === 'repelled') {
+        expect(tp.causeConsequence.threatsRemoved.length).toBeGreaterThan(0);
+      }
+    }
+    assertInvariants(plan, understanding);
   });
 });

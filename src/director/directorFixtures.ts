@@ -16,8 +16,7 @@ import {
   plySignals,
   threatRecord,
   turningPoint,
-  understandingFrom
-} from '../story/storyFixtures';
+  understandingFrom, noStoryConfidence, unknownOutcome } from '../story/storyFixtures';
 
 /**
  * Test-only fixture builders for src/director/*.test.ts. Mirrors
@@ -86,8 +85,12 @@ export function storyPlanFrom(overrides: Partial<StoryPlan> = {}): StoryPlan {
     beats: [],
     moveTreatment: [],
     archetypeSignals: [],
+    leadArchetype: null,
+    supportingArchetypes: [],
     pieceContributions: [],
     explanationOpportunities: [],
+    confidence: noStoryConfidence(),
+    outcome: unknownOutcome(),
     settings: DEFAULT_STORY_SETTINGS,
     ...overrides
   };

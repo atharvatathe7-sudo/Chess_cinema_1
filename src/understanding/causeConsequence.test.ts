@@ -1,3 +1,4 @@
+import { motifInstanceKeyFor } from './motifs';
 import { describe, expect, it } from 'vitest';
 import type { PlyAnalysis } from '../analysis/types';
 import type { ForcedSequence, PlySignals, TacticalMotifInstance, ThreatRecord } from './types';
@@ -129,29 +130,89 @@ describe('buildCauseConsequenceRecord', () => {
     expect(record.multiMoveConsequence).toBeUndefined();
   });
 
-  it('picks the first confirmed motif as the mechanism when one is present', () => {
-    const p = ply({});
-    const fork: TacticalMotifInstance = {
+  /**
+   * Phase 15 replaces the old "picks the first confirmed motif" rule. That
+   * rule named whichever motif came first in board-scan order with no test
+   * that it participated, which is what produced fabricated mechanisms on
+   * real games. The mechanism must now be verified — see
+   * mechanismVerification.ts — so these cases assert both directions of the
+   * new rule rather than the single acceptance the old test covered.
+   */
+  function forkMotif(overrides: Partial<TacticalMotifInstance> = {}): TacticalMotifInstance {
+    return {
       id: 'm1',
       ply: 1,
       motif: 'fork',
       squares: { attacker: 'b6', targets: ['a8', 'c8'] },
-      geometryEvidence: { basis: 'chess-rule', sourcePlies: [1], note: 'x' }
+      motifInstanceKey: motifInstanceKeyFor('fork', 'b6', ['a8', 'c8'], undefined),
+      firstSeenPly: 1,
+      geometryEvidence: { basis: 'chess-rule', sourcePlies: [1], note: 'x' },
+      ...overrides
     };
-    const record = buildCauseConsequenceRecord({
+  }
+
+  function recordWith(p: PlyAnalysis, motifs: readonly TacticalMotifInstance[], threats: readonly ThreatRecord[] = []) {
+    return buildCauseConsequenceRecord({
       ply: p,
       signals: noSignals,
-      motifsForPly: [fork],
-      threatsCreatedHere: [],
+      motifsForPly: motifs,
+      threatsCreatedHere: threats,
       threatsResolvedHere: [],
       bestAlternative: buildBestAlternativeRecord(p, true, undefined, 30),
       reply: undefined,
       forcingReason: null,
       sequence: undefined,
-      allPliesByNumber: new Map([[1, p]])
+      allPliesByNumber: new Map([[p.ply, p]])
     });
+  }
+
+  const threatOn = (square: string): ThreatRecord => ({
+    id: `t-${square}`,
+    ply: 1,
+    side: 'w',
+    kind: 'material-winning-threat',
+    targetSquare: square,
+    evidence: { basis: 'chess-rule', sourcePlies: [1], note: 'x' }
+  });
+
+  it('names a verified motif as the mechanism, recording which instance passed', () => {
+    // d5b6 lands the knight on b6, which is the fork's own attacker square
+    // (V1), the pattern is new on this ply (V2), and the only threat created
+    // lands inside the fork's target set while a real consequence exists (V4).
+    const p = forkPly({});
+    const record = recordWith(p, [forkMotif()], [threatOn('c8')]);
     expect(record.mechanism).toBe('fork');
+    expect(record.mechanismVerified).toBe(true);
+    expect(record.mechanismMotifId).toBe('m1');
     expect(record.immediateChange.motifsTriggered).toEqual(['m1']);
+  });
+
+  it('withholds a motif whose geometry the move never touched (V1)', () => {
+    // e2e4 has nothing to do with a knight fork on b6 — the exact shape of
+    // the old fabrications.
+    const p = ply({});
+    const record = recordWith(p, [forkMotif()], [threatOn('c8')]);
+    expect(record.mechanism).toBeNull();
+    expect(record.mechanismVerified).toBe(false);
+    // The motif is still reported as present. Verification decides what may
+    // be NAMED as causal, it never deletes observed geometry.
+    expect(record.immediateChange.motifsTriggered).toEqual(['m1']);
+  });
+
+  it('withholds a motif that was already standing before this ply (V2)', () => {
+    const p = forkPly({});
+    const record = recordWith(p, [forkMotif({ firstSeenPly: -1 })], [threatOn('c8')]);
+    expect(record.mechanism).toBeNull();
+    expect(record.mechanismVerified).toBe(false);
+  });
+
+  it('withholds a motif when another threat could equally explain the consequence (V4)', () => {
+    // A threat outside the fork's target set means the fork is not the only
+    // available explanation, and V3 cannot rescue it with no forced window.
+    const p = forkPly({});
+    const record = recordWith(p, [forkMotif()], [threatOn('c8'), threatOn('h1')]);
+    expect(record.mechanism).toBeNull();
+    expect(record.mechanismVerified).toBe(false);
   });
 
   it('records a forced opponent response and threat cross-references', () => {
@@ -240,6 +301,108 @@ describe('buildCauseConsequenceRecord', () => {
       allPliesByNumber: new Map([[1, p]])
     });
     expect(record.resolution).toBe('drawn');
+  });
+
+  /**
+   * Phase 15 (M3) — 'repelled' used to be assigned from a large negative
+   * mover-relative swing alone. A move that loses half a queen produces
+   * exactly that number, so outright blunders were narrated as "the threat
+   * being repelled". The label now requires the record's own threatsRemoved
+   * to be non-empty.
+   */
+  describe('resolution corroboration', () => {
+    function resolutionOf(overrides: Partial<PlyAnalysis>, threatsResolvedHere: readonly ThreatRecord[] = []) {
+      const p = ply({ ply: 1, ...overrides });
+      return buildCauseConsequenceRecord({
+        ply: p,
+        signals: noSignals,
+        motifsForPly: [],
+        threatsCreatedHere: [],
+        threatsResolvedHere,
+        bestAlternative: buildBestAlternativeRecord(p, true, undefined, 30),
+        reply: undefined,
+        forcingReason: null,
+        sequence: undefined,
+        allPliesByNumber: new Map([[1, p]])
+      }).resolution;
+    }
+
+    const removedThreat: ThreatRecord = {
+      id: 't-removed',
+      ply: 1,
+      side: 'b',
+      kind: 'material-winning-threat',
+      targetSquare: 'f7',
+      evidence: { basis: 'chess-rule', sourcePlies: [1], note: 'x' }
+    };
+
+    it('does NOT resolve to repelled on a -502 swing with no threats removed', () => {
+      const resolution = resolutionOf({
+        evaluationBefore: { kind: 'cp', cp: 294 },
+        evaluationAfter: { kind: 'cp', cp: -208 },
+        swingCp: -502,
+        swingForMoverCp: -502
+      });
+      expect(resolution).not.toBe('repelled');
+      expect(resolution).toBe('unresolved');
+    });
+
+    it('still resolves to repelled when a threat was removed and the position held', () => {
+      const resolution = resolutionOf(
+        {
+          evaluationBefore: { kind: 'cp', cp: 120 },
+          evaluationAfter: { kind: 'cp', cp: -30 },
+          swingCp: -150,
+          swingForMoverCp: -150
+        },
+        [removedThreat]
+      );
+      expect(resolution).toBe('repelled');
+    });
+
+    it('does NOT claim a threat was repelled when the same move collapsed the position', () => {
+      // A threat genuinely was removed, so the old (threatsRemoved > 0) rule
+      // alone would allow the defensive phrasing — but the move also lost
+      // the game, which is the fact a viewer would actually notice. Two
+      // facts, neither assertable alone, so the record asserts neither.
+      const resolution = resolutionOf(
+        {
+          evaluationBefore: { kind: 'cp', cp: 294 },
+          evaluationAfter: { kind: 'cp', cp: -283 },
+          swingCp: -577,
+          swingForMoverCp: -577
+        },
+        [removedThreat]
+      );
+      expect(resolution).not.toBe('repelled');
+      expect(resolution).toBe('unresolved');
+    });
+
+    it('resolves to forced-mate on mate evidence favouring the mover, without a terminal position', () => {
+      const resolution = resolutionOf({
+        evaluationBefore: { kind: 'cp', cp: 100 },
+        evaluationAfter: { kind: 'mate', mateIn: 3 },
+        mateTransition: 'mate-appeared',
+        swingCp: 900,
+        swingForMoverCp: 900
+      });
+      expect(resolution).toBe('forced-mate');
+    });
+
+    it('does not claim forced-mate when the mate on the board belongs to the opponent', () => {
+      // Black plays a move after which WHITE has mate in 3. The mover did not
+      // force a mate; the mover walked into one.
+      const resolution = resolutionOf({
+        sideToMove: 'b',
+        evaluationBefore: { kind: 'cp', cp: 498 },
+        evaluationAfter: { kind: 'mate', mateIn: 3 },
+        mateTransition: 'mate-appeared',
+        swingCp: 502,
+        swingForMoverCp: -502
+      });
+      expect(resolution).not.toBe('forced-mate');
+      expect(resolution).toBe('unresolved');
+    });
   });
 });
 

@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { classifyMoveTreatment } from './retention';
 import { buildBeats } from './beats';
-import { causeConsequence, gameArc, plySemantics, plySignals, tacticalMotif, turningPoint, understandingFrom } from './storyFixtures';
+import { causeConsequence, gameArc, plySemantics, plySignals, tacticalMotif, turningPoint, understandingFrom,
+  consequenceChain
+} from './storyFixtures';
 import type { CentralConflict } from './types';
 
 describe('classifyMoveTreatment', () => {
@@ -31,7 +33,9 @@ describe('classifyMoveTreatment', () => {
     const centralConflict: CentralConflict = {
       primaryTurningPointId: 'tp-6',
       causalChain: [{ ply: 5, linkType: 'threat-refutation', evidenceId: 'threat-5-0' }],
-      secondaryConflicts: []
+      secondaryConflicts: [],
+      consequenceChain: consequenceChain(0),
+      tier: 'C' as const
     };
     const beats = buildBeats(centralConflict, understanding);
 

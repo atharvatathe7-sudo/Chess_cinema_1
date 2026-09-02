@@ -236,6 +236,13 @@ async function capture(page, pgnText) {
           forcingReason: s.forcingReason,
           verifiedDepth: s.verifiedDepth ?? null
         })),
+        qualityClassCounts: understanding.plies.reduce((acc, ps) => {
+          acc[ps.qualityClass] = (acc[ps.qualityClass] ?? 0) + 1;
+          return acc;
+        }, {}),
+        unverifiedMechanismCount: understanding.turningPoints.filter(
+          (tp) => tp.causeConsequence.mechanism !== null && tp.causeConsequence.mechanismVerified !== true
+        ).length,
         turningPoints: understanding.turningPoints.map((tp) => ({
           id: tp.id,
           ply: tp.ply,
@@ -244,6 +251,8 @@ async function capture(page, pgnText) {
           significanceScore: tp.significance.score,
           significanceReasons: tp.significance.reasons,
           mechanism: tp.causeConsequence.mechanism,
+          mechanismVerified: tp.causeConsequence.mechanismVerified,
+          resolution: tp.causeConsequence.resolution,
           swingForMoverCp: tp.causeConsequence.immediateChange.evaluationDelta.swingForMoverCp,
           materialDelta: tp.causeConsequence.immediateChange.materialDelta,
           threatsCreated: tp.causeConsequence.threatsCreated.length,
@@ -260,6 +269,28 @@ async function capture(page, pgnText) {
       story: {
         hasCentralConflict: story.centralConflict !== null,
         noConflictReason: story.noConflictReason ?? null,
+        // Phase 15 — the fields the new architecture decides on.
+        outcome: story.outcome,
+        confidence: story.confidence,
+        leadArchetype: story.leadArchetype,
+        supportingArchetypes: story.supportingArchetypes,
+        tier: story.centralConflict ? story.centralConflict.tier : null,
+        consequenceChain: story.centralConflict
+          ? {
+              triggerPly: story.centralConflict.consequenceChain.triggerPly,
+              triggerSan: san(story.centralConflict.consequenceChain.triggerPly),
+              antecedents: story.centralConflict.consequenceChain.antecedents,
+              consequents: story.centralConflict.consequenceChain.consequents,
+              payoff: story.centralConflict.consequenceChain.payoff,
+              reachesResult: story.centralConflict.consequenceChain.reachesResult
+            }
+          : null,
+        mechanismVerified: primaryTp ? primaryTp.causeConsequence.mechanismVerified : null,
+        mechanism: primaryTp ? primaryTp.causeConsequence.mechanism : null,
+        resolution: primaryTp ? primaryTp.causeConsequence.resolution : null,
+        primaryQualityClass: primaryTp
+          ? (understanding.plies.find((ps) => ps.ply === primaryTp.ply)?.qualityClass ?? null)
+          : null,
         centralConflict: story.centralConflict
           ? {
               primaryTurningPointId: story.centralConflict.primaryTurningPointId,

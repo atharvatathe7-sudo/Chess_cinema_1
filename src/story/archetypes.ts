@@ -1,7 +1,29 @@
 import type { GameAnalysis } from '../analysis/types';
 import type { GameRecord } from '../pgn/types';
 import type { GameUnderstanding } from '../understanding/types';
-import type { ArchetypeSignal, StoryArchetype, StoryBeat, StorySettings } from './types';
+import type { ArchetypeSignal, CentralConflict, StoryArchetype, StoryBeat, StorySettings } from './types';
+import { winnerOf, type GameOutcome } from './gameOutcome';
+
+/** Below this the final evaluation is not decisive enough to contradict anything. */
+const DECISIVE_FINAL_CP = 300;
+
+/**
+ * True when the final position points decisively at one side while the
+ * recorded result does not award them the game. Both directions count: a
+ * decisive board with a drawn result, and a decisive board favouring the
+ * side that is recorded as losing.
+ */
+function boardContradictsResult(outcome: GameOutcome): boolean {
+  const evaluation = outcome.finalEvaluation;
+  if (evaluation.kind === 'terminal') return false;
+
+  const favours = evaluation.kind === 'mate' ? (evaluation.mateIn > 0 ? 'w' : 'b') : evaluation.cp >= DECISIVE_FINAL_CP ? 'w' : evaluation.cp <= -DECISIVE_FINAL_CP ? 'b' : null;
+  if (favours === null) return false;
+
+  const winner = winnerOf(outcome);
+  if (outcome.result === '1/2-1/2') return true;
+  return winner !== null && winner !== favours;
+}
 
 function beatIdsOverlapping(plies: readonly number[], beats: readonly StoryBeat[]): readonly string[] {
   const plySet = new Set(plies);
@@ -155,6 +177,72 @@ function forcedTrapSignals(understanding: GameUnderstanding, beats: readonly Sto
   }
 
   return signals;
+}
+
+/**
+ * Phase 15 — which archetype, if any, is entitled to own the game's
+ * headline.
+ *
+ * Previously every ArchetypeSignal was equal, and downstream layers each
+ * re-derived a "primary" one from the bare list. That let a 112-ply
+ * pawn-journey span take both the caption and the hook away from the central
+ * conflict, in a game whose actual ending it did not touch.
+ *
+ * An archetype may lead only when it is demonstrably about the same events
+ * as the selected story:
+ *   1. its plies CONTAIN the selected story's trigger ply, and
+ *   2. it PARTICIPATES in the selected story's own beats (beatIds non-empty).
+ *
+ * Both are structural set-membership tests over data that already exists —
+ * no new detection, no confidence heuristic. Everything else is supporting,
+ * which is not a demotion: a supporting archetype is still true, still
+ * annotated, and still rendered.
+ *
+ * NOTE on condition 2. The approved design expressed this as "its evidence
+ * reaches the PayoffTerminus", read literally as containing the payoff ply.
+ * That test is unsatisfiable in practice for the archetypes that most
+ * deserve to lead: forcedTrapSignals records a sacrifice's ForcedSequence
+ * plies, and understanding/gameArc.ts already documents that "the mating
+ * move itself is structurally never part of any ForcedSequence's own
+ * plies". A double-rook-sacrifice-into-mate would therefore have been
+ * demoted to supporting in favour of a bare "CHECKMATE" title — the
+ * opposite of the intent. Beat participation expresses the same idea ("this
+ * archetype is about the arc the story selected") in terms the data model
+ * actually supports.
+ */
+export function resolveArchetypeRoles(
+  signals: readonly ArchetypeSignal[],
+  centralConflict: CentralConflict | null,
+  outcome: GameOutcome
+): { readonly leadArchetype: StoryArchetype | null; readonly supportingArchetypes: readonly StoryArchetype[] } {
+  const all = [...new Set(signals.map((s) => s.archetype))].sort((a, b) => ARCHETYPE_ORDER[a] - ARCHETYPE_ORDER[b]);
+  if (!centralConflict) {
+    return { leadArchetype: null, supportingArchetypes: all };
+  }
+
+  // R1 — when the board and the recorded result disagree, the DISAGREEMENT
+  // is the story. A game that finished drawn on the clock while one side
+  // held a forced mate cannot honestly be titled after a pattern that ran
+  // through it, however genuine that pattern is: the most surprising true
+  // thing about the game is how it ended. No archetype leads here.
+  if (boardContradictsResult(outcome)) {
+    return { leadArchetype: null, supportingArchetypes: all };
+  }
+
+  const triggerPly = centralConflict.consequenceChain.triggerPly;
+
+  // Among the qualifying signals, the winner is picked by the one existing
+  // archetype priority table — never a new hook- or caption-specific rule.
+  const qualifying = signals
+    .filter((signal) => signal.plies.includes(triggerPly) && signal.beatIds.length > 0)
+    .sort((a, b) => ARCHETYPE_ORDER[a.archetype] - ARCHETYPE_ORDER[b.archetype]);
+
+  const lead = qualifying[0];
+  if (!lead) return { leadArchetype: null, supportingArchetypes: all };
+  return {
+    leadArchetype: lead.archetype,
+    supportingArchetypes: all.filter((a) => a !== lead.archetype)
+  };
 }
 
 const ARCHETYPE_ORDER: Readonly<Record<StoryArchetype, number>> = {

@@ -77,7 +77,9 @@ const ARCHETYPE_COLOR: Readonly<Record<StoryArchetype, string>> = {
   'king-hunt': '#7b2ff7',
   'pawn-journey': '#00b8a9',
   'forced-trap': '#e94560',
-  'stalemate-swindle': '#f4a300'
+  'stalemate-swindle': '#f4a300',
+  // Phase 16 — type-completion entry only, reusing the existing stalemate hue.
+  'stalemate-blunder': '#f4a300'
 };
 
 function colorFor(directive: AnnotationDirective): string {

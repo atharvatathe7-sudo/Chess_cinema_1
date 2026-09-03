@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import type { GameAnalysis, PlyAnalysis } from '../analysis/types';
 import type { CauseConsequenceRecord, TurningPoint } from '../understanding/types';
 import { DEFAULT_STORY_SETTINGS } from './types';
-import { buildCausalChain, selectCentralConflict } from './centralConflict';
+import { selectCentralConflict } from './centralConflict';
+import { buildCausalChain } from './causalGraph';
 import {
   analysisFrom,
   causeConsequence,
@@ -22,7 +23,8 @@ import {
  * (which has its own dedicated suite). What remains this file's concern is
  * what selectCentralConflict itself owns: abstention reasons, the SECONDARY
  * conflict list (which rankTurningPoints still orders), causal-chain
- * absorption, and buildCausalChain — which is unchanged.
+ * absorption. buildCausalChain itself now lives in causalGraph.ts (Phase 16,
+ * to break the story-layer import cycle) and is exercised from here unchanged.
  *
  * Fixtures here are built to be Gate-1 admissible on purpose: each turning
  * point carries a real mate transition, which both supplies a meaningful

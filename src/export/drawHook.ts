@@ -33,6 +33,10 @@ const ARCHETYPE_LABEL: Readonly<Record<StoryArchetype, string>> = {
   'king-hunt': 'King Hunt',
   'pawn-journey': 'Pawn Journey',
   'stalemate-swindle': 'Stalemate Swindle',
+  // Phase 16 — the winning side threw the win away. Deliberately NOT worded as
+  // a swindle: a swindle credits the side that was losing, which is the
+  // opposite of what happened here.
+  'stalemate-blunder': 'Stalemate Blunder',
   'forced-trap': 'Forced Trap'
 };
 
@@ -49,7 +53,8 @@ const ARCHETYPE_COLOR_ORDER: Readonly<Record<StoryArchetype, number>> = {
   'forced-trap': 0,
   'king-hunt': 1,
   'pawn-journey': 2,
-  'stalemate-swindle': 3
+  'stalemate-swindle': 3,
+  'stalemate-blunder': 4
 };
 
 /**

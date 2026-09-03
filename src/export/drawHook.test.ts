@@ -17,7 +17,8 @@ const ARCHETYPE_COLOR_ORDER: Readonly<Record<ArchetypeSignal['archetype'], numbe
   'forced-trap': 0,
   'king-hunt': 1,
   'pawn-journey': 2,
-  'stalemate-swindle': 3
+  'stalemate-swindle': 3,
+  'stalemate-blunder': 4
 };
 
 /**

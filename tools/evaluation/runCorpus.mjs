@@ -264,7 +264,17 @@ async function capture(page, pgnText) {
           kind: s.kind ?? null,
           plies: s.plies ?? null
         })),
-        gameArc: understanding.gameArc
+        gameArc: understanding.gameArc,
+        // Phase 16 — the two inputs the new causal facts consume, captured so
+        // 'escape-square-removed' and 'evaluation-collapse' can be verified
+        // against their own evidence rather than trusted.
+        kingMobility: understanding.kingMobility.map((k) => ({ ply: k.ply, color: k.color, count: k.legalEscapeSquareCount })),
+        plyEvaluations: analysis.plies.map((p) => ({
+          ply: p.ply,
+          sideToMove: p.sideToMove,
+          before: p.evaluationBefore,
+          after: p.evaluationAfter
+        }))
       },
       story: {
         hasCentralConflict: story.centralConflict !== null,
@@ -282,7 +292,9 @@ async function capture(page, pgnText) {
               antecedents: story.centralConflict.consequenceChain.antecedents,
               consequents: story.centralConflict.consequenceChain.consequents,
               payoff: story.centralConflict.consequenceChain.payoff,
-              reachesResult: story.centralConflict.consequenceChain.reachesResult
+              reachesResult: story.centralConflict.consequenceChain.reachesResult,
+              // Phase 16 — the trigger move's own chess facts.
+              triggerFacts: story.centralConflict.consequenceChain.triggerFacts ?? null
             }
           : null,
         mechanismVerified: primaryTp ? primaryTp.causeConsequence.mechanismVerified : null,
@@ -321,7 +333,9 @@ async function capture(page, pgnText) {
         archetypeSignals: story.archetypeSignals.map((a) => ({
           archetype: a.archetype,
           plies: a.plies,
-          beatIds: a.beatIds
+          beatIds: a.beatIds,
+          // Phase 16 (MUST HAVE 7) — a structurally-established enabling sacrifice.
+          enablingSacrificePly: a.enablingSacrificePly ?? null
         })),
         moveTreatmentCounts: story.moveTreatment.reduce((acc, t) => {
           acc[t.treatment] = (acc[t.treatment] ?? 0) + 1;

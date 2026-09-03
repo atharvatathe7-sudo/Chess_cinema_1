@@ -59,6 +59,7 @@ const ARCHETYPE_LABEL: Readonly<Record<StoryArchetype, string>> = {
   'king-hunt': 'King Hunt',
   'pawn-journey': 'Pawn Journey',
   'stalemate-swindle': 'Stalemate Swindle',
+  'stalemate-blunder': 'Stalemate Blunder',
   'forced-trap': 'Forced Trap'
 };
 
@@ -72,7 +73,8 @@ const ARCHETYPE_COLOR_ORDER: Readonly<Record<StoryArchetype, number>> = {
   'forced-trap': 0,
   'king-hunt': 1,
   'pawn-journey': 2,
-  'stalemate-swindle': 3
+  'stalemate-swindle': 3,
+  'stalemate-blunder': 4
 };
 
 /** Phase 2.8 — one competing-but-true explanation for a Moment; see CinematicMoment.narratives. */
@@ -164,6 +166,7 @@ const ARCHETYPE_REASON: Readonly<Record<StoryArchetype, string>> = {
   'king-hunt': 'A forced sequence of checks drove the king across the board, ending in mate.',
   'pawn-journey': 'A pawn advanced across the board before promoting.',
   'stalemate-swindle': 'The side that was behind on material escaped with a stalemate.',
+  'stalemate-blunder': 'The side that was winning stalemated the opponent, throwing away the win.',
   'forced-trap': 'A sacrifice forced a decisive sequence.'
 };
 
@@ -189,6 +192,28 @@ const RESOLUTION_PHRASE: Readonly<Record<CauseConsequenceRecord['resolution'], s
 };
 
 /**
+ * Phase 16 — the consequence phrase for a causal claim corroborated by the
+ * CHAIN'S OWN payoff rather than by the trigger-local resolution.
+ *
+ * story/confidence.ts's `resolution` is measured at the trigger's own
+ * consequence ply (`sequence ? endPly : ply`), so a trigger whose payoff lands
+ * several plies later — every mate that isn't delivered by the losing move
+ * itself — reads 'unresolved' there even once the chain has walked, on
+ * evidence, all the way to a checkmate or stalemate. When THAT is the evidence
+ * that unlocked the claim, saying "led to an unresolved position" states the
+ * wrong consequence: the claim and the sentence must describe the same fact.
+ *
+ * Only the two payoff kinds story/confidence.ts's CORROBORATING_PAYOFFS
+ * recognises can ever reach this map — every other payoff leaves
+ * payoffCorroborated false, so causalClaimAllowed can only be true via
+ * resolutionCorroborated for them, and this map is never consulted.
+ */
+const PAYOFF_RESOLUTION_PHRASE: Readonly<Record<'checkmate' | 'stalemate', string>> = {
+  checkmate: 'checkmate',
+  stalemate: 'stalemate'
+};
+
+/**
  * threat-refutation-arrow's own evidenceRef only points at its owning
  * StoryBeat (director/annotations.ts's threatRefutationDirectives), not at
  * the ThreatRecord itself — but fromPly === toPly === threat.refutedBy.ply
@@ -202,56 +227,50 @@ function threatRefutationReason(directive: AnnotationDirective, understanding: G
 }
 
 /**
- * Phase 3 — resolutionFor (understanding/causeConsequence.ts) assigns
- * 'repelled' purely from a large negative evaluation swing for the mover
- * (moverRelativeSwingAtConsequence <= -100); it never checks
- * threatsRemoved. A live pipeline investigation found real games (Scholar's
- * Mate, the pawn-promotion race) where this bucket is reached by an
- * outright blunder that CREATED threats and removed none — "the threat
- * being repelled" is actively contradicted by the record's own
- * threatsRemoved in those cases. The defensive phrasing is only honest
- * when threatsRemoved is actually non-empty (confirmed true for the one
- * real 'repelled' case that does hold up: the Stalemate game's climax).
+ * Phase 16 (D-1) — the verified mechanism is the SINGLE source of truth.
+ *
+ * This module used to re-derive mechanism anchoring itself, from
+ * `immediateChange.motifsTriggered[0]` — whichever motif came first in
+ * board-scan order. Phase 15 had already moved that exact rule upstream as
+ * mechanismVerification.ts's V1 (anchoredToMove), applied per candidate motif
+ * rather than only to the first, and recorded its verdict on the record as
+ * `mechanismVerified` / `mechanismMotifId`. Keeping the local re-derivation
+ * meant two answers to one question, which could disagree in both directions:
+ *
+ *   - a mechanism verified via a LATER motif (because the first failed V1/V2/
+ *     V3/V4) was wrongly suppressed here, since motifsTriggered[0] is not the
+ *     motif that passed;
+ *   - a mechanism the upstream tests REJECTED could still be presented here,
+ *     whenever motifsTriggered[0] happened to touch the moved squares.
+ *
+ * There is now no second verification path. `mechanismVerified` is asserted
+ * directly, which is what understanding/types.ts says the field exists for:
+ * consumers assert on the verification, not on a shape.
  */
-const CONSERVATIVE_SWING_PHRASE = 'a decisive swing against the player who moved';
-
-function resolutionIsUnsupported(causeConsequence: CauseConsequenceRecord): boolean {
-  return causeConsequence.resolution === 'repelled' && causeConsequence.threatsRemoved.length === 0;
+function verifiedMechanismOf(causeConsequence: CauseConsequenceRecord): TacticalMotif | 'king-safety' | 'positional' | null {
+  if (!causeConsequence.mechanismVerified) return null;
+  return causeConsequence.mechanism;
 }
 
 /**
- * Phase 4 — pickMechanism (understanding/causeConsequence.ts) selects
- * whichever tactical motif happened to be first in board-scan order, with
- * no check that it actually explains the move that produced this turning
- * point — see immediateChange.motifsTriggered[0], which is guaranteed (by
- * pickMechanism's own construction) to be the motif instance the mechanism
- * value was read from, when mechanism is a TacticalMotif at all.
+ * Phase 16 (D-3) — the same resolution facts, stated WITHOUT asserting that
+ * the move caused them.
  *
- * A live, ply-by-ply investigation of Evergreen's own climax (Nxe7, ply 40)
- * found the selected fork (attacker f3, targets d3/d1) first appeared two
- * plies earlier at Qxf3 and simply persisted geometrically untouched —
- * Nxe7's own material gain is fully explained by a forced recapture
- * (Rxe7+ Nxe7), and the fork is never converted for the rest of the game.
- * significanceEvidence cannot distinguish this case: it is a same-ply,
- * uniformly-applied swing check (Stage 2's confirmMotifSignificance), not a
- * per-motif relevance check, and it was independently found to disagree
- * with genuine causation in both directions across a wider real-game
- * corpus (missing on every forced-mate mechanism; present on bystander
- * motifs). It is therefore not consulted here at all.
- *
- * involvesMovedPiece is a structural, non-fuzzy substitute requiring no
- * chess judgment: the selected motif is only presented as explanatory when
- * its own geometry is anchored to the square(s) the move played this turn.
+ * RESOLUTION_PHRASE above supplies noun phrases that only ever appear after a
+ * causal connective ("led to a material gain"). When the claim ladder does not
+ * permit a causal statement, the identical underlying facts are still
+ * reported — as observations, joined by conjunction rather than by causation.
+ * This is the "truthful incomplete explanation over fabricated causal
+ * explanation" rule made concrete: nothing is withheld, the CLAIM is weakened.
  */
-function mechanismInvolvesMovedPiece(causeConsequence: CauseConsequenceRecord, understanding: GameUnderstanding): boolean {
-  const motifIds = causeConsequence.immediateChange.motifsTriggered;
-  if (motifIds.length === 0) return true; // not motif-sourced (king-safety/positional) — no grounding concept applies
-  const motif = understanding.motifs.find((m) => m.id === motifIds[0]);
-  if (!motif) return true; // defense-in-depth; motifsTriggered is expected to always resolve
-  const from = causeConsequence.movePlayed.uci.slice(0, 2);
-  const to = causeConsequence.movePlayed.uci.slice(2, 4);
-  return motif.squares.attacker === from || motif.squares.attacker === to || motif.squares.targets.includes(to);
-}
+const RESOLUTION_FACT: Readonly<Record<CauseConsequenceRecord['resolution'], string>> = {
+  'decisive-advantage': 'the evaluation moved decisively',
+  'material-gain': 'material was won',
+  'forced-mate': 'a forced mate followed',
+  repelled: 'a threat was removed',
+  unresolved: 'the position stayed unresolved',
+  drawn: 'the game was drawn'
+};
 
 /**
  * central-conflict-highlight is only ever produced from the StoryPlan's
@@ -259,6 +278,45 @@ function mechanismInvolvesMovedPiece(causeConsequence: CauseConsequenceRecord, u
  * evidenceRefs.turningPointId — so this lookup is expected to resolve for
  * every real central-conflict-highlight, but the fallback below is kept
  * for defense-in-depth rather than assumed to be unreachable.
+ *
+ * Phase 16 (D-3) — StoryPlan.confidence.causalClaimAllowed now gates the
+ * causal FORM of this sentence.
+ *
+ * story/types.ts defines causalClaimAllowed as "the single gate on narration
+ * of the form 'X led to Y'", and story/confidence.ts computes it from four
+ * simultaneous preconditions (mechanism verified, resolution corroborated,
+ * consequents non-empty, trigger linked to a payoff). It was computed
+ * correctly from Phase 15 onward and read by nothing: every caption this
+ * function produced used a causal connective ("led to", "leading to")
+ * regardless of whether those preconditions held.
+ *
+ * THREE reachable outputs, in descending strength — each step down removes a
+ * CLAIM, never a fact:
+ *
+ *   causal + mechanism    "a fork led to a material gain"
+ *   factual + mechanism   "a fork is present, and material was won"
+ *   factual, no mechanism "material was won"
+ *
+ * Phase 16 removed a fourth, unreachable rung ("leading to X", causal with no
+ * mechanism named). story/confidence.ts requires mechanismVerified for
+ * causalClaimAllowed, and verifiedMechanismOf returns non-null exactly when
+ * mechanismVerified holds — so "causal claim permitted, but no mechanism" is
+ * not a state the confidence model can produce. It was dead code that implied
+ * a weaker causal pathway existed; deleting it makes the reachable states
+ * match the model rather than inventing a rung to justify.
+ *
+ * The `mechanism !== null` guard below is therefore an invariant check, not a
+ * branch: if the impossible combination ever did arise, falling through to the
+ * factual form withholds the claim, which is the safe direction.
+ *
+ * Phase 16 also corrected WHICH consequence the causal rung names.
+ * `causalClaimAllowed` accepts either resolutionCorroborated (trigger-local)
+ * or payoffCorroborated (chain-level — see story/confidence.ts). When it was
+ * the chain-level fact that unlocked the claim, the trigger-local `resolution`
+ * can still read 'unresolved' (it is measured at the trigger's own
+ * consequence ply, not at wherever the chain actually arrived), so the
+ * sentence must name the chain's own payoff instead — otherwise the claim and
+ * the stated consequence would describe two different endings.
  */
 function centralConflictReason(directive: AnnotationDirective, story: StoryPlan, understanding: GameUnderstanding): string {
   if (directive.evidenceRef.kind !== 'beat') return 'The decisive moment of the game.';
@@ -269,17 +327,63 @@ function centralConflictReason(directive: AnnotationDirective, story: StoryPlan,
   if (!turningPoint) return 'The decisive moment of the game.';
 
   const causeConsequence = turningPoint.causeConsequence;
-  const unsupported = resolutionIsUnsupported(causeConsequence);
-  const resolution = unsupported ? CONSERVATIVE_SWING_PHRASE : RESOLUTION_PHRASE[causeConsequence.resolution];
+  const mechanism = verifiedMechanismOf(causeConsequence);
 
-  const mechanism = causeConsequence.mechanism;
-  const omitMechanism = mechanism === null || !mechanismInvolvesMovedPiece(causeConsequence, understanding);
-  if (omitMechanism) return `The decisive moment of the game, leading to ${resolution}.`;
-  return `The decisive moment — ${MECHANISM_PHRASE[mechanism]} led to ${resolution}.`;
+  if (story.confidence.causalClaimAllowed && mechanism !== null) {
+    const consequence = causalConsequencePhrase(story, causeConsequence.resolution);
+    return `The decisive moment — ${MECHANISM_PHRASE[mechanism]} led to ${consequence}.`;
+  }
+
+  const fact = RESOLUTION_FACT[causeConsequence.resolution];
+  if (mechanism === null) return `The decisive moment of the game — ${fact}.`;
+  return `The decisive moment of the game — ${MECHANISM_PHRASE[mechanism]} is present, and ${fact}.`;
 }
 
-function archetypeReason(directive: AnnotationDirective): string {
-  return directive.evidenceRef.kind === 'archetypeSignal' ? ARCHETYPE_REASON[directive.evidenceRef.archetype] : FALLBACK_REASON;
+/**
+ * The consequence phrase for an ALLOWED causal claim: the trigger-local
+ * resolution when that is what corroborated it, otherwise the chain's own
+ * payoff. Only called once causalClaimAllowed is already known true, so at
+ * least one of the two corroborations is guaranteed to hold.
+ */
+function causalConsequencePhrase(story: StoryPlan, resolution: CauseConsequenceRecord['resolution']): string {
+  if (story.confidence.resolutionCorroborated) return RESOLUTION_PHRASE[resolution];
+  const payoff = story.centralConflict?.consequenceChain.payoff;
+  if (payoff && (payoff.kind === 'checkmate' || payoff.kind === 'stalemate')) {
+    return PAYOFF_RESOLUTION_PHRASE[payoff.kind];
+  }
+  // Defense-in-depth: causalClaimAllowed guarantees one of the two
+  // corroborations, so this is unreachable in practice.
+  return RESOLUTION_PHRASE[resolution];
+}
+
+/**
+ * Phase 16 (MUST HAVE 7) — the stronger king-hunt sentence, emitted only when
+ * the archetype signal itself carries the structural evidence for it.
+ *
+ * "A sacrifice happened during a king hunt" and "the sacrifice enabled the
+ * mating sequence" are different claims. story/archetypes.ts establishes the
+ * second one, or does not; this layer only reads the verdict. Note this is NOT
+ * gated on StoryConfidence.causalClaimAllowed: that field is computed from the
+ * CENTRAL CONFLICT's own mechanism/resolution/chain, which may be about an
+ * entirely different ply, so applying it here would suppress a
+ * well-evidenced fact for an unrelated reason. This claim carries its own
+ * evidence gate — enablingSacrificePly's three conditions — which is exactly
+ * what licenses it.
+ */
+function archetypeReason(directive: AnnotationDirective, story: StoryPlan): string {
+  if (directive.evidenceRef.kind !== 'archetypeSignal') return FALLBACK_REASON;
+  const archetype = directive.evidenceRef.archetype;
+
+  if (archetype === 'king-hunt') {
+    const signal = story.archetypeSignals.find(
+      (s) => s.archetype === 'king-hunt' && s.enablingSacrificePly !== undefined && s.plies.includes(directive.fromPly)
+    );
+    if (signal?.enablingSacrificePly !== undefined) {
+      return `A sacrifice enabled the mating sequence: the checks that followed drove the king to mate.`;
+    }
+  }
+
+  return ARCHETYPE_REASON[archetype];
 }
 
 function terminalReason(analysis: GameAnalysis): string {
@@ -299,7 +403,7 @@ function reasonFor(directive: AnnotationDirective, understanding: GameUnderstand
     case 'central-conflict-highlight':
       return centralConflictReason(directive, story, understanding);
     case 'archetype-track':
-      return archetypeReason(directive);
+      return archetypeReason(directive, story);
     case 'terminal-result-highlight':
       return terminalReason(analysis);
     case 'last-move':

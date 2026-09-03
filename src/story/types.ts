@@ -55,7 +55,12 @@ export interface StoryBeat {
 // Central conflict
 // ============================================================
 
-export type CausalLinkType =
+/**
+ * How we KNOW two plies belong to the same chain. Structural provenance, not
+ * a chess claim: 'same-sequence' says these plies are in one ForcedSequence,
+ * not that anything in particular happened chess-wise.
+ */
+export type StructuralLinkType =
   | 'same-sequence'
   | 'multi-move-consequence'
   | 'threat-refutation'
@@ -64,10 +69,49 @@ export type CausalLinkType =
   /** Phase 15 — the chain arrived at a genuinely terminal position. */
   | 'terminal-arrival';
 
+/**
+ * Phase 16 — WHAT happened in chess terms at a ply, as opposed to how we know
+ * the ply belongs to the chain. Each value is emitted only when its own
+ * evidence is established; see story/consequenceChain.ts's classifier.
+ *
+ * These are FACTS, never causal claims. 'defender-lost' asserts "a defender of
+ * X was removed and X became winnable" — it never asserts that this is why the
+ * game was won. That stronger statement additionally requires the claim ladder
+ * (StoryConfidence.causalClaimAllowed) to permit it.
+ */
+export type CausalFact =
+  /** A material swing of real size was measured across this ply's own board diff. */
+  | 'material-lost'
+  /** The evaluation moved decisively against the mover AND did not recover — never a single spike. */
+  | 'evaluation-collapse'
+  /** This ply is a reply inside a ForcedSequence: the side to move had no free choice. */
+  | 'forced-response'
+  /** The moving side reduced the opposing king's legal escape squares (KingMobilityRecord). */
+  | 'escape-square-removed'
+  /** A defender was removed or walked away, and its target became profitably takeable. */
+  | 'defender-lost';
+
+export type CausalLinkType = StructuralLinkType | CausalFact;
+
 export interface CausalLink {
   readonly ply: number;
+  /**
+   * Structural provenance. Deliberately still typed as CausalLinkType (the
+   * widened union) rather than narrowed, so existing consumers compile
+   * unchanged; in practice the classifier only ever assigns a
+   * StructuralLinkType here — the chess facts live in `causalFacts`, on their
+   * own axis, because a link has both a reason-we-know-it and a
+   * what-happened, and collapsing them would destroy the first.
+   */
   readonly linkType: CausalLinkType;
   readonly evidenceId: string;
+  /**
+   * Phase 16 — chess-semantic facts observed at this ply, ascending by the
+   * fixed order in CAUSAL_FACT_ORDER. Absent when nothing cleared its
+   * evidence gate; never an empty array, so "no facts" and "not classified"
+   * cannot be confused.
+   */
+  readonly causalFacts?: readonly CausalFact[];
 }
 
 export interface CentralConflict {
@@ -131,6 +175,14 @@ export type PayoffTerminus =
 
 export interface ConsequenceChain {
   readonly triggerPly: number;
+  /**
+   * Phase 16 — the chess facts of the TRIGGER move itself. The trigger is not
+   * a member of antecedents/consequents (it is resolved via
+   * primaryTurningPointId), so without this its own facts — the "45.Bxf6
+   * removes a defender" half of the explanation — had nowhere to live.
+   * Absent when nothing cleared its evidence gate.
+   */
+  readonly triggerFacts?: readonly CausalFact[];
   /** Strictly before triggerPly, ascending. */
   readonly antecedents: readonly CausalLink[];
   /** Strictly after triggerPly, ascending. */
@@ -158,10 +210,39 @@ export type MoveTreatment = 'spine' | 'setup' | 'compressible' | 'theory' | 'pru
 // Archetypes
 // ============================================================
 
-export type StoryArchetype = 'king-hunt' | 'pawn-journey' | 'stalemate-swindle' | 'forced-trap';
+export type StoryArchetype = 'king-hunt' | 'pawn-journey' | 'stalemate-swindle' | 'stalemate-blunder' | 'forced-trap';
+
+/**
+ * Phase 16 — archetypes that are EVIDENCE ONLY.
+ *
+ * Such an archetype is still detected, still carried on StoryPlan, still
+ * available to the hook and to narrative text, and still counted among
+ * lead/supporting roles. What it does NOT do is claim a track of its own on
+ * the board.
+ *
+ * 'stalemate-blunder' is evidence-only because it is, by construction, a
+ * single-ply observation about the very last move of the game. An
+ * archetype-track directive there overlaps the central-conflict highlight and,
+ * since AnnotationDirectiveKind priority ranks archetype-track above it, would
+ * take the Climax's own caption away — replacing the game's decisive moment
+ * with a label about its final move. The observation is worth keeping; the
+ * annotation track is not worth the Climax.
+ */
+export const EVIDENCE_ONLY_ARCHETYPES: ReadonlySet<StoryArchetype> = new Set<StoryArchetype>(['stalemate-blunder']);
 
 export interface ArchetypeSignal {
   readonly archetype: StoryArchetype;
+  /**
+   * Phase 16 (MUST HAVE 7) — the ply of a sacrifice that STRUCTURALLY ENABLED
+   * this archetype's payoff, when one is established.
+   *
+   * Present only on a king-hunt signal, and only when all three conditions in
+   * archetypes.ts's enablingSacrificePly hold. Its absence is meaningful: it
+   * says the weaker fact ("a sacrifice happened during the hunt") may be true
+   * but the stronger one ("the sacrifice enabled the mate") is not evidenced,
+   * so nothing downstream may assert it.
+   */
+  readonly enablingSacrificePly?: number;
   /** Ascending. Every ply this signal is about — not only the ones that overlap a beat. */
   readonly plies: readonly number[];
   /** StoryBeat ids whose plies overlap this signal's plies. May be empty — a signal is never dropped for lack of overlap. */
@@ -217,13 +298,31 @@ export interface StorySettings {
   readonly minPawnJourneyPlies: number;
   /** Minimum material deficit (PIECE_VALUE units, geometry.ts scale) against the stalemating side, shortly before the stalemate, to qualify as a "swindle". */
   readonly swindleMaterialDeficitFloor: number;
+  /**
+   * Phase 16 — the mirror of swindleMaterialDeficitFloor. Minimum material
+   * ADVANTAGE the stalemating side must have held shortly before delivering
+   * stalemate for it to read as a thrown-away win. Same units and same
+   * magnitude as the swindle floor, because it is the same question asked
+   * with the opposite sign.
+   */
+  readonly blunderMaterialAdvantageFloor: number;
+  /**
+   * Corroborating evaluation advantage (centipawns, mover-relative) required
+   * alongside the material advantage. Material alone is NOT sufficient: a
+   * materially-up side can be in a genuinely drawn or locked position, where
+   * a stalemate throws away nothing. Set to the same scale story/
+   * storyCandidates.ts uses for a consequence worth naming.
+   */
+  readonly blunderEvalAdvantageFloor: number;
 }
 
 export const DEFAULT_STORY_SETTINGS: StorySettings = {
   significanceFloorForConflict: 0,
   maxSecondaryConflicts: 3,
   minPawnJourneyPlies: 3,
-  swindleMaterialDeficitFloor: 500
+  swindleMaterialDeficitFloor: 500,
+  blunderMaterialAdvantageFloor: 500,
+  blunderEvalAdvantageFloor: 150
 };
 
 // ============================================================
@@ -257,6 +356,18 @@ export interface StoryConfidence {
   readonly causalClaimAllowed: boolean;
   readonly mechanismVerified: boolean;
   readonly resolutionCorroborated: boolean;
+  /**
+   * Phase 16 — chain-level corroboration, kept as its own fact rather than
+   * folded into resolutionCorroborated so an audit can see WHICH kind of
+   * evidence supported the claim.
+   *
+   * True when the consequence chain actually arrived at a terminal position
+   * the engine observed (checkmate/stalemate). This is strictly stronger
+   * evidence than the trigger-local `resolution` label, which is measured only
+   * at the trigger's own consequence ply and therefore reads 'unresolved' for
+   * any trigger whose payoff lands later in the game.
+   */
+  readonly payoffCorroborated: boolean;
   readonly hasConsequents: boolean;
   readonly reachesResult: boolean;
   /** Short audit strings — never display copy. */

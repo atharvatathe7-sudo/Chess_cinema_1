@@ -31,7 +31,7 @@ describe('buildArchetypeSignals — king-hunt', () => {
     });
     const beat: StoryBeat = { id: 'beat-climax-12', role: 'climax', plies: [12], evidenceRefs: {}, salience: 500 };
 
-    const signals = buildArchetypeSignals(emptyGame, emptyAnalysis, understanding, DEFAULT_STORY_SETTINGS, [beat]);
+    const signals = buildArchetypeSignals(emptyGame, emptyAnalysis, understanding, unknownOutcome(), DEFAULT_STORY_SETTINGS, [beat]);
     const kingHunt = signals.find((s) => s.archetype === 'king-hunt');
     expect(kingHunt).toBeDefined();
     expect(kingHunt!.plies).toEqual([10, 11, 12, 13]);
@@ -41,7 +41,7 @@ describe('buildArchetypeSignals — king-hunt', () => {
 
   it('produces no signal when narrativeSignals has no king-hunt entry', () => {
     const understanding = understandingFrom({ plies: [], narrativeSignals: [] });
-    const signals = buildArchetypeSignals(emptyGame, emptyAnalysis, understanding, DEFAULT_STORY_SETTINGS, []);
+    const signals = buildArchetypeSignals(emptyGame, emptyAnalysis, understanding, unknownOutcome(), DEFAULT_STORY_SETTINGS, []);
     expect(signals.find((s) => s.archetype === 'king-hunt')).toBeUndefined();
   });
 });
@@ -57,7 +57,7 @@ describe('buildArchetypeSignals — pawn-journey', () => {
       plies: [plySemantics(3, plySignals('w-p-e2', { isPromotion: true, promotionPieceType: 'q' }))]
     });
 
-    const signals = buildArchetypeSignals(game, emptyAnalysis, understanding, DEFAULT_STORY_SETTINGS, []);
+    const signals = buildArchetypeSignals(game, emptyAnalysis, understanding, unknownOutcome(), DEFAULT_STORY_SETTINGS, []);
     const journey = signals.find((s) => s.archetype === 'pawn-journey');
     expect(journey).toBeDefined();
     expect(journey!.plies).toEqual([1, 2, 3]);
@@ -69,7 +69,7 @@ describe('buildArchetypeSignals — pawn-journey', () => {
       plies: [plySemantics(1, plySignals('w-p-e7', { isPromotion: true, promotionPieceType: 'q' }))]
     });
 
-    const signals = buildArchetypeSignals(game, emptyAnalysis, understanding, DEFAULT_STORY_SETTINGS, []);
+    const signals = buildArchetypeSignals(game, emptyAnalysis, understanding, unknownOutcome(), DEFAULT_STORY_SETTINGS, []);
     expect(signals.find((s) => s.archetype === 'pawn-journey')).toBeUndefined();
   });
 });
@@ -81,7 +81,7 @@ describe('buildArchetypeSignals — stalemate-swindle', () => {
     // Black delivers the stalemate; White was ahead by 900 just before it (materialDiff is White-relative), so Black's deficit is +900.
     const understanding = understandingFrom({ plies: [], gameArc: gameArc(0, 0, [{ ply: 19, materialDiff: 900 }]) });
 
-    const signals = buildArchetypeSignals(emptyGame, analysis, understanding, DEFAULT_STORY_SETTINGS, []);
+    const signals = buildArchetypeSignals(emptyGame, analysis, understanding, unknownOutcome(), DEFAULT_STORY_SETTINGS, []);
     const swindle = signals.find((s) => s.archetype === 'stalemate-swindle');
     expect(swindle).toBeDefined();
     expect(swindle!.plies).toEqual([20]);
@@ -92,7 +92,7 @@ describe('buildArchetypeSignals — stalemate-swindle', () => {
     const analysis = analysisFrom(plies);
     const understanding = understandingFrom({ plies: [], gameArc: gameArc(0, 0, [{ ply: 19, materialDiff: 100 }]) });
 
-    const signals = buildArchetypeSignals(emptyGame, analysis, understanding, DEFAULT_STORY_SETTINGS, []);
+    const signals = buildArchetypeSignals(emptyGame, analysis, understanding, unknownOutcome(), DEFAULT_STORY_SETTINGS, []);
     expect(signals.find((s) => s.archetype === 'stalemate-swindle')).toBeUndefined();
   });
 
@@ -106,7 +106,7 @@ describe('buildArchetypeSignals — stalemate-swindle', () => {
     const analysis = analysisFrom(plies);
     const understanding = understandingFrom({ plies: [], gameArc: gameArc(0, 0, [{ ply: 18, materialDiff: 1400 }]) });
 
-    const signals = buildArchetypeSignals(emptyGame, analysis, understanding, DEFAULT_STORY_SETTINGS, []);
+    const signals = buildArchetypeSignals(emptyGame, analysis, understanding, unknownOutcome(), DEFAULT_STORY_SETTINGS, []);
     expect(signals.find((s) => s.archetype === 'stalemate-swindle')).toBeUndefined();
   });
 
@@ -115,7 +115,7 @@ describe('buildArchetypeSignals — stalemate-swindle', () => {
     const analysis = analysisFrom(plies);
     const understanding = understandingFrom({ plies: [], gameArc: gameArc(0, 0, [{ ply: 19, materialDiff: 900 }]) });
 
-    const signals = buildArchetypeSignals(emptyGame, analysis, understanding, DEFAULT_STORY_SETTINGS, []);
+    const signals = buildArchetypeSignals(emptyGame, analysis, understanding, unknownOutcome(), DEFAULT_STORY_SETTINGS, []);
     expect(signals.find((s) => s.archetype === 'stalemate-swindle')).toBeUndefined();
   });
 });
@@ -130,7 +130,7 @@ describe('buildArchetypeSignals — forced-trap', () => {
       turningPoints: [turningPoint(9, 'irreversible-material-loss', cc, 400)]
     });
 
-    const signals = buildArchetypeSignals(emptyGame, emptyAnalysis, understanding, DEFAULT_STORY_SETTINGS, []);
+    const signals = buildArchetypeSignals(emptyGame, emptyAnalysis, understanding, unknownOutcome(), DEFAULT_STORY_SETTINGS, []);
     const trap = signals.find((s) => s.archetype === 'forced-trap');
     expect(trap).toBeDefined();
     expect(trap!.plies).toEqual([7, 8, 9]);
@@ -145,7 +145,7 @@ describe('buildArchetypeSignals — forced-trap', () => {
       turningPoints: [turningPoint(9, 'decisive-swing', cc, 200)]
     });
 
-    const signals = buildArchetypeSignals(emptyGame, emptyAnalysis, understanding, DEFAULT_STORY_SETTINGS, []);
+    const signals = buildArchetypeSignals(emptyGame, emptyAnalysis, understanding, unknownOutcome(), DEFAULT_STORY_SETTINGS, []);
     expect(signals.find((s) => s.archetype === 'forced-trap')).toBeUndefined();
   });
 
@@ -154,7 +154,7 @@ describe('buildArchetypeSignals — forced-trap', () => {
       plies: [plySemantics(7, plySignals('w-q-d1', { isSacrifice: true }))]
     });
 
-    const signals = buildArchetypeSignals(emptyGame, emptyAnalysis, understanding, DEFAULT_STORY_SETTINGS, []);
+    const signals = buildArchetypeSignals(emptyGame, emptyAnalysis, understanding, unknownOutcome(), DEFAULT_STORY_SETTINGS, []);
     expect(signals.find((s) => s.archetype === 'forced-trap')).toBeUndefined();
   });
 });
@@ -181,7 +181,7 @@ describe('buildArchetypeSignals — deterministic ordering', () => {
       narrativeSignals: [{ archetype: 'king-hunt', supportingEvidence: [gameHunt], confidence: 0.55 }]
     });
 
-    const signals = buildArchetypeSignals(gamePawn, emptyAnalysis, understanding, DEFAULT_STORY_SETTINGS, []);
+    const signals = buildArchetypeSignals(gamePawn, emptyAnalysis, understanding, unknownOutcome(), DEFAULT_STORY_SETTINGS, []);
     expect(signals.map((s) => s.archetype)).toEqual(['forced-trap', 'king-hunt', 'pawn-journey']);
   });
 });

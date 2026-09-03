@@ -67,6 +67,46 @@ describe('deriveAnnotationDirectives', () => {
     expect(tracks[0]!.evidenceRef).toEqual({ kind: 'archetypeSignal', archetype: 'pawn-journey' });
   });
 
+  it('Phase 16: an EVIDENCE-ONLY archetype produces no archetype-track directive', () => {
+    // stalemate-blunder is classified, carried on StoryPlan, and available to
+    // the hook — but it never claims a track of its own, because its single
+    // ply is the game's last move and a track there would take the Climax's
+    // caption. See story/types.ts's EVIDENCE_ONLY_ARCHETYPES.
+    const moves = [
+      moveRecord(1, 'w', 'p', 'a2', 'a4', 'a4'),
+      moveRecord(2, 'b', 'p', 'h7', 'h5', 'h5'),
+      moveRecord(3, 'w', 'p', 'a4', 'a5', 'a5')
+    ];
+    const game = gameFromMoves(moves);
+    const analysis = analysisFrom([plyAnalysis(1), plyAnalysis(2), plyAnalysis(3)]);
+    const story = storyPlanFrom({
+      beats: [],
+      archetypeSignals: [archetypeSignal('stalemate-blunder', [3], [])]
+    });
+
+    const directives = deriveAnnotationDirectives(game, analysis, {} as never, story);
+    expect(directives.filter((d) => d.kind === 'archetype-track')).toEqual([]);
+  });
+
+  it('Phase 16: a non-evidence-only archetype alongside one still gets its own track', () => {
+    // The suppression must be per-archetype, never a blanket switch-off.
+    const moves = [
+      moveRecord(1, 'w', 'p', 'a2', 'a4', 'a4'),
+      moveRecord(2, 'b', 'p', 'h7', 'h5', 'h5'),
+      moveRecord(3, 'w', 'p', 'a4', 'a5', 'a5')
+    ];
+    const game = gameFromMoves(moves);
+    const analysis = analysisFrom([plyAnalysis(1), plyAnalysis(2), plyAnalysis(3)]);
+    const story = storyPlanFrom({
+      beats: [],
+      archetypeSignals: [archetypeSignal('stalemate-blunder', [3], []), archetypeSignal('pawn-journey', [1, 3], [])]
+    });
+
+    const tracks = deriveAnnotationDirectives(game, analysis, {} as never, story).filter((d) => d.kind === 'archetype-track');
+    expect(tracks).toHaveLength(1);
+    expect(tracks[0]!.evidenceRef).toEqual({ kind: 'archetypeSignal', archetype: 'pawn-journey' });
+  });
+
   it('produces a terminal-result-highlight on the losing king square when the final ply is checkmate', () => {
     const { game, analysis, understanding, story } = richMateEndingScenario();
     const directives = deriveAnnotationDirectives(game, analysis, understanding, story);

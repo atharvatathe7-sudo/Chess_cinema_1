@@ -1,4 +1,4 @@
-import { noStoryConfidence, unknownOutcome } from '../story/storyFixtures';
+import { centralConflict as centralConflictFixture, consequenceChain, noStoryConfidence, unknownOutcome } from '../story/storyFixtures';
 import { motifInstanceKeyFor } from '../understanding/motifs';
 import { describe, expect, it } from 'vitest';
 import { ChessJsEngine } from '../chess/ChessJsEngine';
@@ -17,7 +17,7 @@ import {
   type ThreatRecord,
   type TurningPoint
 } from '../understanding/types';
-import { DEFAULT_STORY_SETTINGS, STORY_SCHEMA_VERSION, type StoryBeat, type StoryPlan } from '../story/types';
+import { DEFAULT_STORY_SETTINGS, STORY_SCHEMA_VERSION, type CentralConflict, type StoryBeat, type StoryConfidence, type StoryPlan } from '../story/types';
 import type { MoveBeat, Timeline } from '../timeline/types';
 import { createInitialState, type AppState } from './AppState';
 import { Store } from './store';
@@ -150,11 +150,11 @@ function understandingFixture(overrides: {
 }
 
 /** A StoryPlan with only `beats` populated — Phase 2.7's reason-derivation reads no other field. */
-function storyFixture(overrides: { beats?: readonly StoryBeat[] } = {}): StoryPlan {
+function storyFixture(overrides: { beats?: readonly StoryBeat[]; confidence?: StoryConfidence; centralConflict?: CentralConflict } = {}): StoryPlan {
   return {
     schemaVersion: STORY_SCHEMA_VERSION,
-    centralConflict: null,
-    noConflictReason: 'no-turning-points',
+    centralConflict: overrides.centralConflict ?? null,
+    noConflictReason: overrides.centralConflict ? undefined : 'no-turning-points',
     beats: overrides.beats ?? [],
     moveTreatment: [],
     archetypeSignals: [],
@@ -162,10 +162,35 @@ function storyFixture(overrides: { beats?: readonly StoryBeat[] } = {}): StoryPl
     supportingArchetypes: [],
     pieceContributions: [],
     explanationOpportunities: [],
-    confidence: noStoryConfidence(),
+    confidence: overrides.confidence ?? noStoryConfidence(),
     outcome: unknownOutcome(),
     settings: DEFAULT_STORY_SETTINGS
   };
+}
+
+/**
+ * Phase 16 (D-3) — a StoryPlan whose claim ladder permits causal wording.
+ *
+ * storyFixture's default confidence is noStoryConfidence(), i.e.
+ * causalClaimAllowed === false, which is now the CONSERVATIVE path. Tests
+ * whose subject is the phrase tables themselves (which words map to which
+ * mechanism/resolution) use this so they keep exercising the causal form they
+ * were written for; tests whose subject is the claim ladder use storyFixture
+ * directly. Nothing here loosens the ladder — it states which side of it a
+ * given test is about.
+ */
+function causalStoryFixture(overrides: { beats?: readonly StoryBeat[] } = {}): StoryPlan {
+  return storyFixture({
+    ...overrides,
+    confidence: noStoryConfidence({
+      level: 'high',
+      causalClaimAllowed: true,
+      mechanismVerified: true,
+      resolutionCorroborated: true,
+      hasConsequents: true,
+      reachesResult: true
+    })
+  });
 }
 
 const EMPTY_UNDERSTANDING = understandingFixture();
@@ -208,7 +233,7 @@ function causeConsequence(
   mechanism: CauseConsequenceRecord['mechanism'],
   resolution: CauseConsequenceRecord['resolution'],
   ply: number,
-  overrides: { threatsRemoved?: readonly string[]; motifsTriggered?: readonly string[]; movePlayed?: { san: string; uci: string } } = {}
+  overrides: { threatsRemoved?: readonly string[]; motifsTriggered?: readonly string[]; movePlayed?: { san: string; uci: string }; mechanismVerified?: boolean } = {}
 ): CauseConsequenceRecord {
   return {
     id: `cc-${ply}`,
@@ -218,7 +243,9 @@ function causeConsequence(
     immediateChange: { evaluationDelta: { swingCp: 0, swingForMoverCp: 0 }, materialDelta: 0, motifsTriggered: overrides.motifsTriggered ?? [] },
     // Phase 15 — a named mechanism in a fixture is a verified one by
     // construction; mechanism === null means there is no claim to verify.
-    mechanismVerified: mechanism !== null,
+    // Phase 16 (D-1) — overridable, so a fixture can express the one shape
+    // that must never reach a caption: a mechanism NAMED but not verified.
+    mechanismVerified: overrides.mechanismVerified ?? mechanism !== null,
     threatsCreated: [],
     threatsRemoved: overrides.threatsRemoved ?? [],
     mechanism,
@@ -243,7 +270,7 @@ function turningPoint(
   ply: number,
   mechanism: CauseConsequenceRecord['mechanism'],
   resolution: CauseConsequenceRecord['resolution'],
-  overrides: { threatsRemoved?: readonly string[]; motifsTriggered?: readonly string[]; movePlayed?: { san: string; uci: string } } = {}
+  overrides: { threatsRemoved?: readonly string[]; motifsTriggered?: readonly string[]; movePlayed?: { san: string; uci: string }; mechanismVerified?: boolean } = {}
 ): TurningPoint {
   return {
     id,
@@ -477,29 +504,43 @@ describe('deriveCinematicMoments', () => {
       const timeline = timelineFromDurations([600, 600]);
       const plan = cinematicPlan([directive('central-conflict-highlight', 2, 2, { kind: 'beat', id: 'beat-1' })]);
       const understanding = understandingFixture({ turningPoints: [turningPoint('tp-1', 2, mechanism, 'decisive-advantage')] });
-      const story = storyFixture({ beats: [climaxBeat('beat-1', 2, 'tp-1')] });
+      const story = causalStoryFixture({ beats: [climaxBeat('beat-1', 2, 'tp-1')] });
       const [moment] = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, understanding, story);
       expect(moment!.reason).toBe(expectedReason);
     });
 
+    /**
+     * Phase 16 — with no verified mechanism there is no causal rung at all:
+     * causalClaimAllowed requires mechanismVerified, so "causal but
+     * mechanism-free" is not a state the confidence model can produce. These
+     * cases therefore assert the FACTUAL form, which is what a mechanism-free
+     * climax actually renders as, and they continue to pin the exact phrase
+     * for every resolution value.
+     */
     const RESOLUTION_CASES: ReadonlyArray<[CauseConsequenceRecord['resolution'], string]> = [
-      ['decisive-advantage', 'The decisive moment of the game, leading to a decisive advantage.'],
-      ['material-gain', 'The decisive moment of the game, leading to a material gain.'],
-      ['forced-mate', 'The decisive moment of the game, leading to a forced mate.'],
+      ['decisive-advantage', 'The decisive moment of the game — the evaluation moved decisively.'],
+      ['material-gain', 'The decisive moment of the game — material was won.'],
+      ['forced-mate', 'The decisive moment of the game — a forced mate followed.'],
       // Phase 3: this fixture never sets threatsRemoved (defaults to []),
       // so 'repelled' is the unsupported case and uses the conservative
       // phrase — see the dedicated 'Phase 3' describe block below for the
       // threatsRemoved.length > 0 case, which keeps the defensive wording.
-      ['repelled', 'The decisive moment of the game, leading to a decisive swing against the player who moved.'],
-      ['unresolved', 'The decisive moment of the game, leading to an unresolved position.'],
-      ['drawn', 'The decisive moment of the game, leading to a draw.']
+      // Phase 16 (D-2) — was 'a decisive swing against the player who moved',
+      // the substitution Phase 3's caption-time patch made whenever
+      // threatsRemoved was empty. That patch is gone: the pipeline can no
+      // longer produce an uncorroborated 'repelled' (the corroboration is now
+      // a precondition on the value itself), so this table states the real
+      // phrase for the real resolution.
+      ['repelled', 'The decisive moment of the game — a threat was removed.'],
+      ['unresolved', 'The decisive moment of the game — the position stayed unresolved.'],
+      ['drawn', 'The decisive moment of the game — the game was drawn.']
     ];
 
     it.each(RESOLUTION_CASES)('central-conflict-highlight maps resolution %s to its exact phrase when mechanism is null', (resolution, expectedReason) => {
       const timeline = timelineFromDurations([600, 600]);
       const plan = cinematicPlan([directive('central-conflict-highlight', 2, 2, { kind: 'beat', id: 'beat-1' })]);
       const understanding = understandingFixture({ turningPoints: [turningPoint('tp-1', 2, null, resolution)] });
-      const story = storyFixture({ beats: [climaxBeat('beat-1', 2, 'tp-1')] });
+      const story = causalStoryFixture({ beats: [climaxBeat('beat-1', 2, 'tp-1')] });
       const [moment] = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, understanding, story);
       expect(moment!.reason).toBe(expectedReason);
     });
@@ -515,7 +556,7 @@ describe('deriveCinematicMoments', () => {
       const timeline = timelineFromDurations([600, 600]);
       const plan = cinematicPlan([directive('central-conflict-highlight', 2, 2, { kind: 'beat', id: 'beat-1' })]);
       // Beat references a turningPointId that doesn't exist in understanding.turningPoints.
-      const story = storyFixture({ beats: [climaxBeat('beat-1', 2, 'missing-tp')] });
+      const story = causalStoryFixture({ beats: [climaxBeat('beat-1', 2, 'missing-tp')] });
       const [moment] = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, EMPTY_UNDERSTANDING, story);
       expect(moment!.reason).toBe('The decisive moment of the game.');
     });
@@ -571,7 +612,7 @@ describe('deriveCinematicMoments', () => {
       const timeline = timelineFromDurations([600, 600]);
       const plan = cinematicPlan([directive('central-conflict-highlight', 2, 2, { kind: 'beat', id: 'beat-1' })]);
       const understanding = understandingFixture({ turningPoints: [turningPoint('tp-1', 2, 'fork', 'forced-mate')] });
-      const story = storyFixture({ beats: [climaxBeat('beat-1', 2, 'tp-1')] });
+      const story = causalStoryFixture({ beats: [climaxBeat('beat-1', 2, 'tp-1')] });
       const first = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, understanding, story);
       const second = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, understanding, story);
       expect(first[0]!.reason).toBe(second[0]!.reason);
@@ -608,7 +649,7 @@ describe('deriveCinematicMoments', () => {
         directive('central-conflict-highlight', 40, 40, { kind: 'beat', id: 'beat-climax-40' })
       ]);
       const understanding = understandingFixture({ turningPoints: [turningPoint('tp-1', 40, 'fork', 'forced-mate')] });
-      const story = storyFixture({ beats: [climaxBeat('beat-climax-40', 40, 'tp-1')] });
+      const story = causalStoryFixture({ beats: [climaxBeat('beat-climax-40', 40, 'tp-1')] });
       const analysis = analysisEndingWith(46, { kind: 'cp', cp: 0 });
 
       const moments = deriveCinematicMoments(plan, timeline, analysis, understanding, story);
@@ -685,7 +726,7 @@ describe('deriveCinematicMoments', () => {
         threats: [threatRecord('mate-threat', 4, 5)],
         turningPoints: [turningPoint('tp-1', 5, 'skewer', 'material-gain')]
       });
-      const story = storyFixture({ beats: [climaxBeat('beat-1', 5, 'tp-1')] });
+      const story = causalStoryFixture({ beats: [climaxBeat('beat-1', 5, 'tp-1')] });
       const moments = deriveCinematicMoments(plan, timeline, analysisEndingWith(6, { kind: 'cp', cp: 0 }), understanding, story);
       expect(moments).toHaveLength(1);
       const moment = moments[0]!;
@@ -722,7 +763,7 @@ describe('deriveCinematicMoments', () => {
         directive('central-conflict-highlight', 40, 40, { kind: 'beat', id: 'beat-climax-40' })
       ]);
       const understanding = understandingFixture({ turningPoints: [turningPoint('tp-1', 40, 'fork', 'forced-mate')] });
-      const story = storyFixture({ beats: [climaxBeat('beat-climax-40', 40, 'tp-1')] });
+      const story = causalStoryFixture({ beats: [climaxBeat('beat-climax-40', 40, 'tp-1')] });
       const analysis = analysisEndingWith(46, { kind: 'cp', cp: 0 });
 
       const first = deriveCinematicMoments(plan, timeline, analysis, understanding, story);
@@ -739,7 +780,7 @@ describe('deriveCinematicMoments', () => {
         directive('central-conflict-highlight', 40, 40, { kind: 'beat', id: 'beat-climax-40' })
       ]);
       const understanding = understandingFixture({ turningPoints: [turningPoint('tp-1', 40, 'fork', 'forced-mate')] });
-      const story = storyFixture({ beats: [climaxBeat('beat-climax-40', 40, 'tp-1')] });
+      const story = causalStoryFixture({ beats: [climaxBeat('beat-climax-40', 40, 'tp-1')] });
       const analysis = analysisEndingWith(46, { kind: 'cp', cp: 0 });
       const [moment] = deriveCinematicMoments(plan, timeline, analysis, understanding, story);
       expect(moment!.id).toBe('archetype-track-39-46');
@@ -751,271 +792,386 @@ describe('deriveCinematicMoments', () => {
     });
   });
 
-  describe('Phase 3 — conservative wording when "repelled" is unsupported by threatsRemoved', () => {
-    it('Scholar\'s-Mate-shaped: repelled with zero threats removed uses conservative, mechanism-free wording (the pin is also ungrounded — see Phase 4 below)', () => {
-      // Reproduces the exact real Scholar's Mate shape confirmed via a live
-      // pipeline probe: mechanism 'pin', resolution 'repelled', threatsRemoved
-      // empty. The default motif/movePlayed placeholders here are also
-      // structurally ungrounded (Phase 4), so this omission is doubly
-      // supported; the dedicated Phase 4 block below isolates the grounding
-      // check on its own with a real (non-'repelled') resolution.
+  describe('Phase 16 (D-2) — the "repelled" guard lives upstream, not here', () => {
+    /**
+     * Phase 3 added a caption-time patch (resolutionIsUnsupported) that
+     * rewrote 'repelled' whenever threatsRemoved was empty. Phase 15 promoted
+     * that exact condition into a PRECONDITION on the value itself:
+     * understanding/causeConsequence.ts's resolutionFor only ever returns
+     * 'repelled' when corroboration.threatsRemovedCount > 0. The caption-time
+     * patch was therefore unreachable, and Phase 16 removed it rather than
+     * leaving a second, redundant heuristic behind.
+     *
+     * What remains testable here is the contract that replaced it: this layer
+     * reports the resolution it is given, and never second-guesses it.
+     */
+    it('renders a corroborated "repelled" with its own phrase, with no local re-derivation', () => {
       const timeline = timelineFromDurations([600, 600]);
       const plan = cinematicPlan([directive('central-conflict-highlight', 2, 2, { kind: 'beat', id: 'beat-1' })]);
       const understanding = understandingFixture({
-        turningPoints: [turningPoint('tp-1', 2, 'pin', 'repelled', { motifsTriggered: ['motif-1'] })],
-        motifs: [motifInstance('motif-1', 2, 'pin', false)]
+        turningPoints: [turningPoint('tp-1', 2, null, 'repelled', { threatsRemoved: ['threat-1'] })]
       });
-      const story = storyFixture({ beats: [climaxBeat('beat-1', 2, 'tp-1')] });
+      const story = causalStoryFixture({ beats: [climaxBeat('beat-1', 2, 'tp-1')] });
       const [moment] = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, understanding, story);
-      expect(moment!.reason).toBe('The decisive moment of the game, leading to a decisive swing against the player who moved.');
-      expect(moment!.reason).not.toContain('repelled');
-      expect(moment!.reason).not.toContain('pin');
+      expect(moment!.reason).toBe('The decisive moment of the game — a threat was removed.');
     });
 
-    it('repelled with an actually removed threat and a structurally grounded mechanism keeps the existing defensive wording', () => {
-      // The motif's squares are explicitly aligned with the default
-      // movePlayed ('e2e4') so this exercises resolution-conservatism
-      // (threatsRemoved non-empty => not unsupported) independently of
-      // Phase 4's grounding check, which would otherwise also suppress an
-      // unaligned motif regardless of this test's threatsRemoved setup.
+    it('does not silently rewrite a resolution based on threatsRemoved anymore', () => {
+      // The shape Phase 3 used to patch. It can no longer be produced by the
+      // real pipeline, but if a record like this ever reached the caption
+      // layer, the honest behaviour is to report what the record says — not to
+      // substitute a different claim invented here.
       const timeline = timelineFromDurations([600, 600]);
       const plan = cinematicPlan([directive('central-conflict-highlight', 2, 2, { kind: 'beat', id: 'beat-1' })]);
       const understanding = understandingFixture({
-        turningPoints: [turningPoint('tp-1', 2, 'skewer', 'repelled', { threatsRemoved: ['threat-1'], motifsTriggered: ['motif-1'] })],
-        motifs: [motifInstance('motif-1', 2, 'skewer', true, { attacker: 'e2', targets: ['e4'] })]
+        turningPoints: [turningPoint('tp-1', 2, null, 'repelled', { threatsRemoved: [] })]
       });
-      const story = storyFixture({ beats: [climaxBeat('beat-1', 2, 'tp-1')] });
+      const story = causalStoryFixture({ beats: [climaxBeat('beat-1', 2, 'tp-1')] });
       const [moment] = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, understanding, story);
-      expect(moment!.reason).toBe('The decisive moment — a skewer led to the threat being repelled.');
-    });
-
-    it('reason derivation remains deterministic across repeated calls for the conservative-wording path', () => {
-      const timeline = timelineFromDurations([600, 600]);
-      const plan = cinematicPlan([directive('central-conflict-highlight', 2, 2, { kind: 'beat', id: 'beat-1' })]);
-      const understanding = understandingFixture({
-        turningPoints: [turningPoint('tp-1', 2, 'pin', 'repelled', { motifsTriggered: ['motif-1'] })],
-        motifs: [motifInstance('motif-1', 2, 'pin', false)]
-      });
-      const story = storyFixture({ beats: [climaxBeat('beat-1', 2, 'tp-1')] });
-      const first = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, understanding, story);
-      const second = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, understanding, story);
-      expect(first[0]!.reason).toBe(second[0]!.reason);
-      expect(first[0]!.reason).toBe('The decisive moment of the game, leading to a decisive swing against the player who moved.');
+      expect(moment!.reason).toBe('The decisive moment of the game — a threat was removed.');
+      expect(moment!.reason).not.toContain('decisive swing against the player who moved');
     });
   });
 
-  describe('Phase 4 — mechanism grounding via involvesMovedPiece', () => {
-    it('1. a selected motif structurally unrelated to the moved piece/square suppresses the mechanism clause', () => {
-      const timeline = timelineFromDurations([600, 600]);
-      const plan = cinematicPlan([directive('central-conflict-highlight', 2, 2, { kind: 'beat', id: 'beat-1' })]);
-      const understanding = understandingFixture({
-        turningPoints: [turningPoint('tp-1', 2, 'discovery', 'material-gain', { motifsTriggered: ['motif-1'] })],
-        motifs: [motifInstance('motif-1', 2, 'discovery', true, { attacker: 'a1', targets: ['a8'] })] // default movePlayed is e2e4 — unrelated
-      });
-      const story = storyFixture({ beats: [climaxBeat('beat-1', 2, 'tp-1')] });
-      const [moment] = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, understanding, story);
-      expect(moment!.reason).not.toContain('discovered attack');
-      expect(moment!.reason).toBe('The decisive moment of the game, leading to a material gain.');
-    });
-
-    it('2. motif.squares.attacker === movePlayed.from preserves the mechanism clause', () => {
+  describe('Phase 16 (D-1) — the verified mechanism is the single source of truth', () => {
+    /**
+     * Phase 4 grounded the mechanism clause by re-deriving anchoring HERE,
+     * from immediateChange.motifsTriggered[0]. Phase 15 had already moved that
+     * rule upstream (mechanismVerification.ts's V1), applied per candidate
+     * motif rather than only to the first, and recorded the verdict as
+     * `mechanismVerified`. Phase 16 deletes the local copy.
+     *
+     * These tests assert the two failure modes the duplication allowed, in
+     * both directions.
+     */
+    it('a mechanism verified via a LATER motif is not suppressed because an earlier motif would have failed', () => {
+      // The regression this fixes. motif-A is first in motifsTriggered and its
+      // geometry is entirely unrelated to the move (h1/a8 vs e2e4) — the old
+      // local check read motifsTriggered[0] and would have suppressed the
+      // clause. motif-B is the one that actually passed verification upstream,
+      // and it is anchored to the move. The verified mechanism must survive.
       const timeline = timelineFromDurations([600, 600]);
       const plan = cinematicPlan([directive('central-conflict-highlight', 2, 2, { kind: 'beat', id: 'beat-1' })]);
       const understanding = understandingFixture({
         turningPoints: [
-          turningPoint('tp-1', 2, 'pin', 'material-gain', {
-            motifsTriggered: ['motif-1'],
-            movePlayed: { san: 'm', uci: 'c6e7' }
+          turningPoint('tp-1', 2, 'fork', 'decisive-advantage', {
+            motifsTriggered: ['motif-A', 'motif-B'],
+            movePlayed: { san: 'e4', uci: 'e2e4' },
+            mechanismVerified: true
           })
         ],
-        motifs: [motifInstance('motif-1', 2, 'pin', false, { attacker: 'c6', targets: ['h1'] })] // attacker === move.from ('c6')
+        motifs: [
+          motifInstance('motif-A', 2, 'battery', false, { attacker: 'h1', targets: ['a8'] }),
+          motifInstance('motif-B', 2, 'fork', false, { attacker: 'e4', targets: ['d6', 'f6'] })
+        ]
       });
-      const story = storyFixture({ beats: [climaxBeat('beat-1', 2, 'tp-1')] });
+      const story = causalStoryFixture({ beats: [climaxBeat('beat-1', 2, 'tp-1')] });
       const [moment] = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, understanding, story);
-      expect(moment!.reason).toBe('The decisive moment — a pin led to a material gain.');
+      expect(moment!.reason).toBe('The decisive moment — a fork led to a decisive advantage.');
     });
 
-    it('3. motif.squares.attacker === movePlayed.to preserves the mechanism clause', () => {
+    it('an UNVERIFIED mechanism never leaks into a caption, even when its motif geometry touches the moved squares', () => {
+      // The mirror failure. The motif is perfectly anchored (attacker === the
+      // move's own destination), so the old local check would have passed it
+      // through — but mechanismVerification rejected it upstream (it failed
+      // V2/V3/V4), so no mechanism may be named.
+      const timeline = timelineFromDurations([600, 600]);
+      const plan = cinematicPlan([directive('central-conflict-highlight', 2, 2, { kind: 'beat', id: 'beat-1' })]);
+      const understanding = understandingFixture({
+        turningPoints: [
+          turningPoint('tp-1', 2, 'fork', 'decisive-advantage', {
+            motifsTriggered: ['motif-1'],
+            movePlayed: { san: 'e4', uci: 'e2e4' },
+            mechanismVerified: false
+          })
+        ],
+        motifs: [motifInstance('motif-1', 2, 'fork', false, { attacker: 'e4', targets: ['d6', 'f6'] })]
+      });
+      const story = causalStoryFixture({ beats: [climaxBeat('beat-1', 2, 'tp-1')] });
+      const [moment] = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, understanding, story);
+      expect(moment!.reason).toBe('The decisive moment of the game — the evaluation moved decisively.');
+      expect(moment!.reason).not.toContain('fork');
+    });
+
+    it('a null mechanism stays mechanism-free regardless of what motifs are present', () => {
+      const timeline = timelineFromDurations([600, 600]);
+      const plan = cinematicPlan([directive('central-conflict-highlight', 2, 2, { kind: 'beat', id: 'beat-1' })]);
+      const understanding = understandingFixture({
+        turningPoints: [
+          turningPoint('tp-1', 2, null, 'material-gain', {
+            motifsTriggered: ['motif-1'],
+            movePlayed: { san: 'e4', uci: 'e2e4' }
+          })
+        ],
+        motifs: [motifInstance('motif-1', 2, 'fork', true, { attacker: 'e4', targets: ['d6'] })]
+      });
+      const story = causalStoryFixture({ beats: [climaxBeat('beat-1', 2, 'tp-1')] });
+      const [moment] = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, understanding, story);
+      expect(moment!.reason).toBe('The decisive moment of the game — material was won.');
+    });
+
+    it('motif geometry no longer influences the caption at all: identical records with opposite geometry read the same', () => {
+      // The clearest statement of the invariant. Both fixtures are verified;
+      // only the motif's squares differ, and the old code would have produced
+      // two different captions from them.
+      const timeline = timelineFromDurations([600, 600]);
+      const plan = cinematicPlan([directive('central-conflict-highlight', 2, 2, { kind: 'beat', id: 'beat-1' })]);
+      const story = causalStoryFixture({ beats: [climaxBeat('beat-1', 2, 'tp-1')] });
+
+      const anchored = understandingFixture({
+        turningPoints: [
+          turningPoint('tp-1', 2, 'pin', 'decisive-advantage', {
+            motifsTriggered: ['motif-1'],
+            movePlayed: { san: 'Be7', uci: 'a3e7' },
+            mechanismVerified: true
+          })
+        ],
+        motifs: [motifInstance('motif-1', 2, 'pin', false, { attacker: 'a3', targets: ['e7'] })]
+      });
+      const unanchored = understandingFixture({
+        turningPoints: [
+          turningPoint('tp-1', 2, 'pin', 'decisive-advantage', {
+            motifsTriggered: ['motif-1'],
+            movePlayed: { san: 'Be7', uci: 'a3e7' },
+            mechanismVerified: true
+          })
+        ],
+        motifs: [motifInstance('motif-1', 2, 'pin', false, { attacker: 'h1', targets: ['b8'] })]
+      });
+
+      const [a] = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, anchored, story);
+      const [b] = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, unanchored, story);
+      expect(a!.reason).toBe('The decisive moment — a pin led to a decisive advantage.');
+      expect(b!.reason).toBe(a!.reason);
+    });
+
+    it('reason derivation stays deterministic across repeated calls for both the verified and unverified paths', () => {
+      const timeline = timelineFromDurations([600, 600]);
+      const plan = cinematicPlan([directive('central-conflict-highlight', 2, 2, { kind: 'beat', id: 'beat-1' })]);
+      const story = causalStoryFixture({ beats: [climaxBeat('beat-1', 2, 'tp-1')] });
+      for (const verified of [true, false]) {
+        const understanding = understandingFixture({
+          turningPoints: [
+            turningPoint('tp-1', 2, 'skewer', 'material-gain', {
+              motifsTriggered: ['motif-1'],
+              movePlayed: { san: 'Re7', uci: 'e1e7' },
+              mechanismVerified: verified
+            })
+          ],
+          motifs: [motifInstance('motif-1', 2, 'skewer', false, { attacker: 'e1', targets: ['e7'] })]
+        });
+        const first = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, understanding, story);
+        const second = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, understanding, story);
+        expect(first).toEqual(second);
+      }
+    });
+  });
+
+  describe('Phase 16 (D-3) — causalClaimAllowed gates causal wording', () => {
+    /**
+     * story/types.ts defines causalClaimAllowed as "the single gate on
+     * narration of the form 'X led to Y'". It was computed correctly from
+     * Phase 15 onward and consumed by nothing, so every caption asserted
+     * causation regardless of whether the evidence supported it.
+     *
+     * Each pair below holds the FACTS constant and varies only the claim
+     * ladder, so the difference in output is exactly the difference in claim.
+     */
+    function reasonFor(causalClaimAllowed: boolean, mechanismVerified: boolean): string {
       const timeline = timelineFromDurations([600, 600]);
       const plan = cinematicPlan([directive('central-conflict-highlight', 2, 2, { kind: 'beat', id: 'beat-1' })]);
       const understanding = understandingFixture({
         turningPoints: [
           turningPoint('tp-1', 2, 'fork', 'material-gain', {
             motifsTriggered: ['motif-1'],
-            movePlayed: { san: 'm', uci: 'h3g2' }
+            movePlayed: { san: 'Nd5', uci: 'c3d5' },
+            mechanismVerified
           })
         ],
-        motifs: [motifInstance('motif-1', 2, 'fork', false, { attacker: 'g2', targets: ['f1', 'h1'] })] // attacker === move.to ('g2')
+        motifs: [motifInstance('motif-1', 2, 'fork', false, { attacker: 'd5', targets: ['e7', 'c7'] })]
       });
-      const story = storyFixture({ beats: [climaxBeat('beat-1', 2, 'tp-1')] });
+      const story = causalClaimAllowed
+        ? causalStoryFixture({ beats: [climaxBeat('beat-1', 2, 'tp-1')] })
+        : storyFixture({ beats: [climaxBeat('beat-1', 2, 'tp-1')] });
+      const [moment] = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, understanding, story);
+      return moment!.reason;
+    }
+
+    const CAUSAL_CONNECTIVES = ['led to', 'leading to', 'caused', 'because of'];
+
+    it('POSITIVE: allowed + verified mechanism uses the full causal form', () => {
+      expect(reasonFor(true, true)).toBe('The decisive moment — a fork led to a material gain.');
+    });
+
+    it('UNREACHABLE STATE: "causal claim allowed, no verified mechanism" withholds the claim rather than inventing a weaker one', () => {
+      // story/confidence.ts requires mechanismVerified for causalClaimAllowed,
+      // so this combination cannot arise from the real model. Phase 16 deleted
+      // the rung that used to serve it. If it ever did arise, the safe
+      // direction is to withhold the causal claim, NOT to offer a weaker
+      // causal pathway — which is exactly what this asserts.
+      const reason = reasonFor(true, false);
+      expect(reason).toBe('The decisive moment of the game — material was won.');
+      for (const connective of CAUSAL_CONNECTIVES) expect(reason).not.toContain(connective);
+    });
+
+    it('NEGATIVE: disallowed + verified mechanism states both facts without asserting causation', () => {
+      const reason = reasonFor(false, true);
+      expect(reason).toBe('The decisive moment of the game — a fork is present, and material was won.');
+      for (const connective of CAUSAL_CONNECTIVES) expect(reason).not.toContain(connective);
+    });
+
+    it('NEGATIVE: disallowed without a verified mechanism reports the resolution as a bare fact', () => {
+      const reason = reasonFor(false, false);
+      expect(reason).toBe('The decisive moment of the game — material was won.');
+      for (const connective of CAUSAL_CONNECTIVES) expect(reason).not.toContain(connective);
+      expect(reason).not.toContain('fork');
+    });
+
+    it('NEGATIVE: no resolution loses its facts when the claim is withheld — only the claim weakens', () => {
+      // Every resolution must still SAY something under the factual form. A
+      // withheld causal claim must never become a withheld fact.
+      const RESOLUTIONS: ReadonlyArray<[CauseConsequenceRecord['resolution'], string]> = [
+        ['decisive-advantage', 'the evaluation moved decisively'],
+        ['material-gain', 'material was won'],
+        ['forced-mate', 'a forced mate followed'],
+        ['repelled', 'a threat was removed'],
+        ['unresolved', 'the position stayed unresolved'],
+        ['drawn', 'the game was drawn']
+      ];
+      for (const [resolution, fact] of RESOLUTIONS) {
+        const timeline = timelineFromDurations([600, 600]);
+        const plan = cinematicPlan([directive('central-conflict-highlight', 2, 2, { kind: 'beat', id: 'beat-1' })]);
+        const understanding = understandingFixture({
+          turningPoints: [turningPoint('tp-1', 2, null, resolution, { threatsRemoved: ['threat-1'] })]
+        });
+        const story = storyFixture({ beats: [climaxBeat('beat-1', 2, 'tp-1')] });
+        const [moment] = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, understanding, story);
+        expect(moment!.reason).toBe(`The decisive moment of the game — ${fact}.`);
+        for (const connective of CAUSAL_CONNECTIVES) expect(moment!.reason).not.toContain(connective);
+      }
+    });
+  });
+
+  describe('Phase 16 — a payoff-corroborated causal claim names the actual payoff', () => {
+    /**
+     * The mismatch this fixes: causalClaimAllowed can be unlocked by
+     * payoffCorroborated (the chain reached checkmate/stalemate) rather than
+     * by resolutionCorroborated (the trigger-local resolution). The
+     * trigger-local `resolution` is measured at the trigger's OWN consequence
+     * ply, so it can still read 'unresolved' even when that chain-level
+     * payoff is exactly what justified the claim — "led to an unresolved
+     * position" would then describe a different ending than the one that
+     * licensed the sentence. The fix: when payoffCorroborated (and NOT
+     * resolutionCorroborated) is what unlocked the claim, the sentence names
+     * the chain's own payoff instead.
+     */
+    function payoffCorroboratedStory(payoffKind: 'checkmate' | 'stalemate'): StoryPlan {
+      const conflict: CentralConflict = centralConflictFixture('tp-1', 2, {
+        consequenceChain: consequenceChain(2, { payoff: { kind: payoffKind, atPly: 5 }, reachesResult: true, consequents: [{ ply: 5, linkType: 'terminal-arrival', evidenceId: 'terminal-5' }] })
+      });
+      return storyFixture({
+        beats: [climaxBeat('beat-1', 2, 'tp-1')],
+        centralConflict: conflict,
+        confidence: noStoryConfidence({
+          level: 'high',
+          causalClaimAllowed: true,
+          mechanismVerified: true,
+          resolutionCorroborated: false,
+          payoffCorroborated: true,
+          hasConsequents: true,
+          reachesResult: true
+        })
+      });
+    }
+
+    it('1a. names checkmate when the causal claim was corroborated by a chain that reached checkmate', () => {
+      const timeline = timelineFromDurations([600, 600]);
+      const plan = cinematicPlan([directive('central-conflict-highlight', 2, 2, { kind: 'beat', id: 'beat-1' })]);
+      // The trigger-local resolution is deliberately 'unresolved' — the exact
+      // shape story/confidence.ts's payoff-corroboration path exists for.
+      const understanding = understandingFixture({
+        turningPoints: [
+          turningPoint('tp-1', 2, 'king-safety', 'unresolved', { motifsTriggered: [], movePlayed: { san: 'a2+', uci: 'a2a3' } })
+        ]
+      });
+      const story = payoffCorroboratedStory('checkmate');
+      const [moment] = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, understanding, story);
+      expect(moment!.reason).toBe('The decisive moment — a king-safety issue led to checkmate.');
+      expect(moment!.reason).not.toContain('unresolved');
+    });
+
+    it('1b. names stalemate when the causal claim was corroborated by a chain that reached stalemate', () => {
+      const timeline = timelineFromDurations([600, 600]);
+      const plan = cinematicPlan([directive('central-conflict-highlight', 2, 2, { kind: 'beat', id: 'beat-1' })]);
+      const understanding = understandingFixture({
+        turningPoints: [
+          turningPoint('tp-1', 2, 'king-safety', 'unresolved', { motifsTriggered: [], movePlayed: { san: 'a2+', uci: 'a2a3' } })
+        ]
+      });
+      const story = payoffCorroboratedStory('stalemate');
+      const [moment] = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, understanding, story);
+      expect(moment!.reason).toBe('The decisive moment — a king-safety issue led to stalemate.');
+      expect(moment!.reason).not.toContain('unresolved');
+    });
+
+    it('2. trigger-local resolution behaviour is UNCHANGED when payoff corroboration is absent', () => {
+      // The exact pre-existing causalStoryFixture shape: resolutionCorroborated
+      // true, payoffCorroborated false (its default). Must still render the
+      // resolution phrase, not a payoff phrase.
+      const timeline = timelineFromDurations([600, 600]);
+      const plan = cinematicPlan([directive('central-conflict-highlight', 2, 2, { kind: 'beat', id: 'beat-1' })]);
+      const understanding = understandingFixture({
+        turningPoints: [
+          turningPoint('tp-1', 2, 'fork', 'material-gain', {
+            motifsTriggered: ['motif-1'],
+            movePlayed: { san: 'Nd5', uci: 'c3d5' }
+          })
+        ],
+        motifs: [motifInstance('motif-1', 2, 'fork', false, { attacker: 'd5', targets: ['e7', 'c7'] })]
+      });
+      const story = causalStoryFixture({ beats: [climaxBeat('beat-1', 2, 'tp-1')] });
+      expect(story.confidence.payoffCorroborated).toBe(false);
       const [moment] = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, understanding, story);
       expect(moment!.reason).toBe('The decisive moment — a fork led to a material gain.');
     });
 
-    it('4. movePlayed.to included in motif.squares.targets preserves the mechanism clause', () => {
+    it('2b. a factual (non-causal) caption is unaffected by payoff corroboration entirely', () => {
+      // When the claim itself is disallowed, the payoff-naming logic must
+      // never be reached at all — only the CLAIM ladder decides that, per the
+      // existing D-3 safety model.
       const timeline = timelineFromDurations([600, 600]);
       const plan = cinematicPlan([directive('central-conflict-highlight', 2, 2, { kind: 'beat', id: 'beat-1' })]);
       const understanding = understandingFixture({
         turningPoints: [
-          turningPoint('tp-1', 2, 'skewer', 'material-gain', {
-            motifsTriggered: ['motif-1'],
-            movePlayed: { san: 'm', uci: 'a1e7' }
-          })
-        ],
-        motifs: [motifInstance('motif-1', 2, 'skewer', false, { attacker: 'h4', targets: ['e7', 'a1'] })] // move.to ('e7') is among targets
+          turningPoint('tp-1', 2, 'king-safety', 'unresolved', { motifsTriggered: [], movePlayed: { san: 'a2+', uci: 'a2a3' } })
+        ]
       });
-      const story = storyFixture({ beats: [climaxBeat('beat-1', 2, 'tp-1')] });
+      const conflict: CentralConflict = centralConflictFixture('tp-1', 2, {
+        consequenceChain: consequenceChain(2, { payoff: { kind: 'checkmate', atPly: 5 }, reachesResult: true })
+      });
+      const story = storyFixture({
+        beats: [climaxBeat('beat-1', 2, 'tp-1')],
+        centralConflict: conflict,
+        confidence: noStoryConfidence({
+          mechanismVerified: true,
+          resolutionCorroborated: false,
+          payoffCorroborated: true,
+          causalClaimAllowed: false // still disallowed, e.g. hasConsequents false
+        })
+      });
       const [moment] = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, understanding, story);
-      expect(moment!.reason).toBe('The decisive moment — a skewer led to a material gain.');
+      expect(moment!.reason).toBe('The decisive moment of the game — a king-safety issue is present, and the position stayed unresolved.');
+      expect(moment!.reason).not.toContain('checkmate');
     });
 
-    it('5. significanceEvidence === false does not suppress a structurally grounded mechanism, including when resolution is also unsupported', () => {
-      // Exactly the case Phase 3's mechanismHasSignificance would have
-      // wrongly suppressed: resolution 'repelled' with zero threatsRemoved
-      // (unsupported), a motif with no significanceEvidence, but this time
-      // the motif IS grounded (attacker === move.to) — a genuine mechanism
-      // must survive regardless of significance.
-      const timeline = timelineFromDurations([600, 600]);
-      const plan = cinematicPlan([directive('central-conflict-highlight', 2, 2, { kind: 'beat', id: 'beat-1' })]);
-      const understanding = understandingFixture({
-        turningPoints: [
-          turningPoint('tp-1', 2, 'battery', 'repelled', {
-            motifsTriggered: ['motif-1'],
-            movePlayed: { san: 'm', uci: 'h3g2' }
-          })
-        ],
-        motifs: [motifInstance('motif-1', 2, 'battery', false, { attacker: 'g2', targets: ['f1'] })]
-      });
-      const story = storyFixture({ beats: [climaxBeat('beat-1', 2, 'tp-1')] });
-      const [moment] = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, understanding, story);
-      expect(moment!.reason).toBe('The decisive moment — a battery led to a decisive swing against the player who moved.');
-      expect(moment!.reason).not.toContain('repelled');
-    });
-
-    it('6. Scholar\'s Mate real climax: repelled + ungrounded pin (attacker c5, targets g1) against Nf6 (g8f6) stays conservative and mechanism-free', () => {
-      // Exact real shape confirmed via a live pipeline probe: mechanism
-      // 'pin', attacker c5, targets [g1], movePlayed Nf6 (g8f6). Neither
-      // move square matches the attacker, and g1 is not f6, so
-      // involvesMovedPiece is false independent of resolutionIsUnsupported
-      // (which is already true here too, from Phase 3).
-      const timeline = timelineFromDurations([600, 600]);
-      const plan = cinematicPlan([directive('central-conflict-highlight', 2, 2, { kind: 'beat', id: 'beat-1' })]);
-      const understanding = understandingFixture({
-        turningPoints: [
-          turningPoint('tp-1', 2, 'pin', 'repelled', {
-            motifsTriggered: ['motif-1'],
-            movePlayed: { san: 'Nf6', uci: 'g8f6' }
-          })
-        ],
-        motifs: [motifInstance('motif-1', 2, 'pin', false, { attacker: 'c5', targets: ['g1'], throughSquare: 'f2' })]
-      });
-      const story = storyFixture({ beats: [climaxBeat('beat-1', 2, 'tp-1')] });
-      const [moment] = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, understanding, story);
-      expect(moment!.reason).toBe('The decisive moment of the game, leading to a decisive swing against the player who moved.');
-    });
-
-    it('7. Evergreen real climax: material-gain + ungrounded fork (attacker f3, a leftover from Qxf3) against Nxe7 (c6e7) is now conservative — Phase 3\'s "must remain unchanged" premise is superseded by this finding', () => {
-      // The fork (attacker f3, targets [d3, d1]) first appeared two plies
-      // earlier at Qxf3 and simply persisted; Nxe7's material gain is fully
-      // explained by the forced Rxe7+ Nxe7 recapture, unrelated to the fork,
-      // which is never converted for the rest of the game (see the Phase 4
-      // investigation report). Neither 'c6' (from) nor 'e7' (to) matches
-      // attacker 'f3' or is among targets ['d3','d1'].
-      const timeline = timelineFromDurations([600, 600]);
-      const plan = cinematicPlan([directive('central-conflict-highlight', 2, 2, { kind: 'beat', id: 'beat-1' })]);
-      const understanding = understandingFixture({
-        turningPoints: [
-          turningPoint('tp-1', 2, 'fork', 'material-gain', {
-            threatsRemoved: ['threat-1'],
-            motifsTriggered: ['motif-1'],
-            movePlayed: { san: 'Nxe7', uci: 'c6e7' }
-          })
-        ],
-        motifs: [motifInstance('motif-1', 2, 'fork', false, { attacker: 'f3', targets: ['d3', 'd1'] })]
-      });
-      const story = storyFixture({ beats: [climaxBeat('beat-1', 2, 'tp-1')] });
-      const [moment] = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, understanding, story);
-      expect(moment!.reason).toBe('The decisive moment of the game, leading to a material gain.');
-      expect(moment!.reason).not.toContain('fork');
-    });
-
-    it('8. Stalemate real climax: repelled + one threat removed + ungrounded skewer (attacker d8) against Kf7 (e8f7) is now conservative — the resolution stays supported, only the mechanism clause is suppressed', () => {
-      // Exact real shape confirmed live: mechanism 'skewer', attacker d8,
-      // targets [d2], movePlayed Kf7 (e8f7), threatsRemoved non-empty (so
-      // resolutionIsUnsupported is false — the resolution phrase itself
-      // remains 'the threat being repelled'). Neither 'e8' nor 'f7' matches
-      // attacker 'd8' or is among targets ['d2'].
-      const timeline = timelineFromDurations([600, 600]);
-      const plan = cinematicPlan([directive('central-conflict-highlight', 2, 2, { kind: 'beat', id: 'beat-1' })]);
-      const understanding = understandingFixture({
-        turningPoints: [
-          turningPoint('tp-1', 2, 'skewer', 'repelled', {
-            threatsRemoved: ['threat-1'],
-            motifsTriggered: ['motif-1'],
-            movePlayed: { san: 'Kf7', uci: 'e8f7' }
-          })
-        ],
-        motifs: [motifInstance('motif-1', 2, 'skewer', false, { attacker: 'd8', targets: ['d2'], throughSquare: 'd7' })]
-      });
-      const story = storyFixture({ beats: [climaxBeat('beat-1', 2, 'tp-1')] });
-      const [moment] = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, understanding, story);
-      expect(moment!.reason).toBe('The decisive moment of the game, leading to the threat being repelled.');
-      expect(moment!.reason).not.toContain('skewer');
-    });
-
-    it('9. Promotion race real climax: repelled + one threat removed + grounded fork (attacker g2 === move.to) keeps its existing mechanism wording unchanged', () => {
-      // Exact real shape confirmed live: mechanism 'fork', attacker g2,
-      // targets [f1, h1], movePlayed hxg2 (h3g2) — attacker === move.to, so
-      // involvesMovedPiece is true, and the motif also lacks
-      // significanceEvidence, demonstrating grounding (not significance)
-      // is what preserves this mechanism.
-      const timeline = timelineFromDurations([600, 600]);
-      const plan = cinematicPlan([directive('central-conflict-highlight', 2, 2, { kind: 'beat', id: 'beat-1' })]);
-      const understanding = understandingFixture({
-        turningPoints: [
-          turningPoint('tp-1', 2, 'fork', 'repelled', {
-            threatsRemoved: ['threat-1'],
-            motifsTriggered: ['motif-1'],
-            movePlayed: { san: 'hxg2', uci: 'h3g2' }
-          })
-        ],
-        motifs: [motifInstance('motif-1', 2, 'fork', false, { attacker: 'g2', targets: ['f1', 'h1'] })]
-      });
-      const story = storyFixture({ beats: [climaxBeat('beat-1', 2, 'tp-1')] });
-      const [moment] = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, understanding, story);
-      expect(moment!.reason).toBe('The decisive moment — a fork led to the threat being repelled.');
-    });
-
-    it('10. reason derivation is deterministic across repeated calls for both the suppressed and preserved grounding paths', () => {
-      const timeline = timelineFromDurations([600, 600]);
-      const plan = cinematicPlan([directive('central-conflict-highlight', 2, 2, { kind: 'beat', id: 'beat-1' })]);
-
-      const ungrounded = understandingFixture({
-        turningPoints: [
-          turningPoint('tp-1', 2, 'fork', 'material-gain', { motifsTriggered: ['motif-1'], movePlayed: { san: 'Nxe7', uci: 'c6e7' } })
-        ],
-        motifs: [motifInstance('motif-1', 2, 'fork', false, { attacker: 'f3', targets: ['d3', 'd1'] })]
-      });
-      const story = storyFixture({ beats: [climaxBeat('beat-1', 2, 'tp-1')] });
-      const firstUngrounded = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, ungrounded, story);
-      const secondUngrounded = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, ungrounded, story);
-      expect(firstUngrounded[0]!.reason).toBe(secondUngrounded[0]!.reason);
-      expect(firstUngrounded[0]!.reason).toBe('The decisive moment of the game, leading to a material gain.');
-
-      const grounded = understandingFixture({
-        turningPoints: [
-          turningPoint('tp-1', 2, 'fork', 'repelled', {
-            threatsRemoved: ['threat-1'],
-            motifsTriggered: ['motif-1'],
-            movePlayed: { san: 'hxg2', uci: 'h3g2' }
-          })
-        ],
-        motifs: [motifInstance('motif-1', 2, 'fork', false, { attacker: 'g2', targets: ['f1', 'h1'] })]
-      });
-      const firstGrounded = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, grounded, story);
-      const secondGrounded = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, grounded, story);
-      expect(firstGrounded[0]!.reason).toBe(secondGrounded[0]!.reason);
-      expect(firstGrounded[0]!.reason).toBe('The decisive moment — a fork led to the threat being repelled.');
+    it('3. a no-conflict (abstained) StoryPlan is unaffected by the payoff-phrase logic', () => {
+      // Games 03/06-shaped: centralConflict is null, so centralConflictReason
+      // never reaches the payoff lookup at all.
+      const timeline = timelineFromDurations([600]);
+      const plan = cinematicPlan([directive('central-conflict-highlight', 1, 1, { kind: 'beat', id: 'beat-1' })]);
+      const story = storyFixture({ confidence: noStoryConfidence({ reasons: ['no-story: no-admissible-candidate'] }) });
+      const [moment] = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, EMPTY_UNDERSTANDING, story);
+      expect(moment!.reason).toBe('The decisive moment of the game.');
     });
   });
 });

@@ -169,6 +169,7 @@ export function noStoryConfidence(overrides: Partial<StoryConfidence> = {}): Sto
     causalClaimAllowed: false,
     mechanismVerified: false,
     resolutionCorroborated: false,
+    payoffCorroborated: false,
     hasConsequents: false,
     reachesResult: false,
     reasons: ['fixture'],

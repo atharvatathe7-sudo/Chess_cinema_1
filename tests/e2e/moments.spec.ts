@@ -1,6 +1,20 @@
 import { expect, test } from '@playwright/test';
 
 /**
+ * Phase 16 note on the exact caption strings asserted below.
+ *
+ * Two deliberate behaviour changes moved this text, and the assertions were
+ * updated to the new truth rather than loosened:
+ *
+ *   D-3  StoryConfidence.causalClaimAllowed now gates causal wording. These
+ *        canonical games all resolve to causalClaimAllowed === false, so their
+ *        climax captions state the same facts without asserting causation
+ *        ("— material was won" rather than ", leading to a material gain").
+ *   MH7  a king hunt whose mate was structurally enabled by a sacrifice now
+ *        says so. Evergreen is exactly that shape, so its King Hunt narrative
+ *        names the sacrifice.
+ */
+/**
  * Phase 2.6 — Cinematic Moments navigation. The real-browser regression
  * target this file exists for: timeline/navigation.ts's ordinary Next Move
  * still lands exactly on scene.durationMs once overshot past the last
@@ -89,7 +103,7 @@ test('Scholar\'s Mate: Next Move overshoot still hides the terminal highlight, b
   // with no threat actually removed; Phase 3 then had to paper over that at
   // caption time with a conservative "decisive swing" phrasing. M3 removes
   // the mislabel at source, so no workaround phrasing is needed.
-  await expect(climaxItem.locator('.moment-reason')).toHaveText('The decisive moment of the game, leading to an unresolved position.');
+  await expect(climaxItem.locator('.moment-reason')).toHaveText('The decisive moment of the game — the position stayed unresolved.');
 
   // 1. Reproduce the OLD bug with ordinary Next Move, unchanged: Restart,
   // then step past the last move so nextBeatBoundaryMs's fallback lands
@@ -213,8 +227,8 @@ test('Evergreen: a central-conflict/archetype moment is navigable and Export sti
   await expect(momentButtons).toHaveCount(2);
   const secondaryNarratives = forcedTrapItem.locator('.moment-narratives li');
   await expect(secondaryNarratives).toHaveCount(2);
-  await expect(secondaryNarratives.nth(0)).toHaveText('King Hunt: A forced sequence of checks drove the king across the board, ending in mate.');
-  await expect(secondaryNarratives.nth(1)).toHaveText('Climax: The decisive moment of the game, leading to a material gain.');
+  await expect(secondaryNarratives.nth(0)).toHaveText('King Hunt: A sacrifice enabled the mating sequence: the checks that followed drove the king to mate.');
+  await expect(secondaryNarratives.nth(1)).toHaveText('Climax: The decisive moment of the game — material was won.');
   // The primary button's accessible name is unaffected by the secondary list.
   await expect(forcedTrapButton).toHaveText('Forced Trap — Move 47');
 
@@ -280,7 +294,7 @@ test('Promotion race: a second independent multi-narrative Moment also shows the
   // move created or used it (M5 now withholds it). "The threat being
   // repelled" came from a large negative swing with no threat removed (M3).
   // What remains is what the data actually supports.
-  await expect(secondaryNarratives.nth(0)).toHaveText('Climax: The decisive moment of the game, leading to a material gain.');
+  await expect(secondaryNarratives.nth(0)).toHaveText('Climax: The decisive moment of the game — material was won.');
   await expect(secondaryNarratives.nth(1)).toHaveText('Threat Refutation: A threat to win material was refuted here.');
 
   // The primary button's accessible name is unaffected by the secondary list.
@@ -308,7 +322,7 @@ test('Stalemate: the terminal Moment shows the exact stalemate reason, distinct 
   // Phase 15 — the story now anchors on the move that forces the stalemate
   // (the ply immediately before it) rather than an earlier swing, and its
   // resolution is reported honestly rather than as a repelled threat.
-  await expect(climaxItem.locator('.moment-reason')).toHaveText('The decisive moment of the game, leading to an unresolved position.');
+  await expect(climaxItem.locator('.moment-reason')).toHaveText('The decisive moment of the game — the position stayed unresolved.');
 
   // Phase 2.9: every Moment in this game (Threat Refutation, Climax,
   // Stalemate) has exactly one narrative — none of them should ever gain

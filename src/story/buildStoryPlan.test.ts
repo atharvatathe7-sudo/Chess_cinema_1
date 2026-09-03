@@ -29,6 +29,7 @@ describe('buildStoryPlan', () => {
         causalClaimAllowed: false,
         mechanismVerified: false,
         resolutionCorroborated: false,
+        payoffCorroborated: false,
         hasConsequents: false,
         reachesResult: false,
         reasons: ['no-story: no-turning-points']

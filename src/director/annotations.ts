@@ -1,6 +1,7 @@
 import type { GameRecord } from '../pgn/types';
 import type { GameAnalysis } from '../analysis/types';
 import type { GameUnderstanding } from '../understanding/types';
+import { EVIDENCE_ONLY_ARCHETYPES } from '../story/types';
 import type { StoryArchetype, StoryPlan } from '../story/types';
 import { parseFenPlacement } from '../render/fen';
 import type { AnnotationDirective, AnnotationDirectiveKind } from './types';
@@ -83,7 +84,10 @@ const ARCHETYPE_COLOR_ORDER: Readonly<Record<StoryArchetype, number>> = {
   'forced-trap': 0,
   'king-hunt': 1,
   'pawn-journey': 2,
-  'stalemate-swindle': 3
+  'stalemate-swindle': 3,
+  // Phase 16 — type-completion entry only. Ordered next to its sibling
+  // stalemate archetype; no director logic is changed by its presence.
+  'stalemate-blunder': 4
 };
 
 /**
@@ -95,6 +99,11 @@ const ARCHETYPE_COLOR_ORDER: Readonly<Record<StoryArchetype, number>> = {
 function archetypeTrackDirectives(game: GameRecord, story: StoryPlan): AnnotationDirective[] {
   const directives: AnnotationDirective[] = [];
   for (const signal of story.archetypeSignals) {
+    // Phase 16 — an evidence-only archetype is never given a track of its own.
+    // See story/types.ts's EVIDENCE_ONLY_ARCHETYPES for why. This is the only
+    // place archetype tracks are produced, so the check belongs here; no
+    // priority, merge, or camera rule is touched by it.
+    if (EVIDENCE_ONLY_ARCHETYPES.has(signal.archetype)) continue;
     if (signal.plies.length === 0) continue;
     const squares = new Set<string>();
     for (const ply of signal.plies) {

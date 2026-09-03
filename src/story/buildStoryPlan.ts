@@ -65,7 +65,7 @@ export function buildStoryPlan(
 
   const { centralConflict, noConflictReason } = selectCentralConflict(understanding, analysis, outcome, settings);
   const beats = buildBeats(centralConflict, understanding);
-  const archetypeSignals = buildArchetypeSignals(game, analysis, understanding, settings, beats);
+  const archetypeSignals = buildArchetypeSignals(game, analysis, understanding, outcome, settings, beats);
   const moveTreatment = classifyMoveTreatment(understanding, beats, archetypeSignals);
   const explanationOpportunities = buildExplanationOpportunities(understanding);
   const pieceContributions = buildPieceContributions(game, understanding, beats, archetypeSignals);

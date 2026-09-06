@@ -2,11 +2,20 @@ import { describe, expect, it } from 'vitest';
 import { assertValidTimeline } from '../timeline/invariants';
 import type { MoveBeat } from '../timeline/types';
 import { resolveCamera } from '../render/resolveCamera';
-import type { CameraDirective } from './types';
+import { boundsOfSquares } from '../render/coords';
+import { pieceIdFor } from '../pgn/pieceId';
+import type { CameraDirective, TrackingDirective } from './types';
 import { buildCinematicPlan } from './buildCinematicPlan';
 import { buildCameraPlan, lowerToTimeline, TERMINAL_ZOOM_IN_MS, TERMINAL_ZOOM_OUT_MS } from './lowerToTimeline';
-import { prunedPlyScenario, quietGameScenario, richMateEndingScenario, windowedMomentScenario, zeroMoveScenario } from './directorFixtures';
+import { zoomForSquares } from './camera';
+import { gameFromMoves, moveRecord, prunedPlyScenario, quietGameScenario, richMateEndingScenario, windowedMomentScenario, zeroMoveScenario } from './directorFixtures';
 import { DEFAULT_DIRECTOR_SETTINGS } from './types';
+
+/** Mirrors lowerToTimeline.ts's own private centerOfSquares exactly, for computing expected values from production geometry rather than hardcoding them. */
+function expectedCenter(squares: readonly string[]): { centerX: number; centerY: number } {
+  const bounds = boundsOfSquares(squares)!;
+  return { centerX: (bounds.minX + bounds.maxX) / 2, centerY: (bounds.minY + bounds.maxY) / 2 };
+}
 
 function moveBeats(timeline: ReturnType<typeof lowerToTimeline>): MoveBeat[] {
   return timeline.scenes[0]!.beats.filter((b): b is MoveBeat => b.kind === 'move');
@@ -497,6 +506,237 @@ describe('buildCameraPlan — Phase 13B terminal payoff', () => {
 
     assertAscending(plan.keyframes);
     expect(plan.keyframes[plan.keyframes.length - 1]).toEqual({ atMs: sceneDurationMs, centerX: 4, centerY: 4, zoom: 1 });
+  });
+});
+
+/**
+ * Phase 18D Batch 1 — buildCameraPlan's own tracking overlay. Every test
+ * here hand-builds a TrackingDirective directly (the same style the Phase
+ * 12B/13B suites above already use for CameraDirective) rather than going
+ * through deriveTrackingDirectives, so lowering's own contract is verified
+ * independently of subject-selection — see tracking.test.ts for that.
+ */
+describe('buildCameraPlan — Phase 18D tracking', () => {
+  const SETTINGS = DEFAULT_DIRECTOR_SETTINGS;
+  const RAMP_MS = SETTINGS.preClimaxRampMs;
+
+  it('empty trackingDirectives (or omitting the parameter entirely) produces byte-identical output to the pre-Phase-18D signature', () => {
+    const directives: CameraDirective[] = [{ atPly: 6, untilPly: 6, role: 'critical', zoom: 1.8, squares: ['e4', 'e5'], evidenceRef: { kind: 'beat', id: 'b' } }];
+    const plyAtMs = new Map([[6, 1200]]);
+    const plyDurationMs = new Map([[6, 2100]]);
+
+    const omitted = buildCameraPlan(directives, plyAtMs, plyDurationMs, 3600, RAMP_MS, null);
+    const explicitEmpty = buildCameraPlan(directives, plyAtMs, plyDurationMs, 3600, RAMP_MS, null, []);
+    expect(explicitEmpty).toEqual(omitted);
+  });
+
+  it('produces one keyframe per tracked ply, each centered on the subject\'s actual square unioned with that ply\'s own move geometry, within existing zoom limits', () => {
+    const blackKing = pieceIdFor('b', 'k', 'e8');
+    const attacker = pieceIdFor('w', 'q', 'd1');
+    const game = gameFromMoves([
+      moveRecord(5, 'w', 'q', 'd1', 'd7', 'Qd7+', { pieceId: attacker }),
+      moveRecord(6, 'b', 'k', 'e8', 'f8', 'Kf8'),
+      moveRecord(7, 'w', 'q', 'd7', 'd8', 'Qd8+', { pieceId: attacker })
+    ]);
+    const directives: CameraDirective[] = [{ atPly: 5, untilPly: 7, role: 'consequence', zoom: 1.5, squares: ['a1', 'h8'], evidenceRef: { kind: 'beat', id: 'b' } }];
+    const tracking: TrackingDirective[] = [
+      { fromPly: 5, toPly: 7, subject: { kind: 'piece', pieceId: blackKing }, role: 'consequence', priority: 0, evidenceRef: { kind: 'king-safety', ply: 5 } }
+    ];
+    const plyAtMs = new Map([
+      [5, 1000],
+      [6, 1600],
+      [7, 2200]
+    ]);
+    const plyDurationMs = new Map([
+      [5, 600],
+      [6, 600],
+      [7, 600]
+    ]);
+
+    const plan = buildCameraPlan(directives, plyAtMs, plyDurationMs, 3500, RAMP_MS, null, tracking, game, SETTINGS);
+
+    // BASE + 3 tracked points + natural hold-end + final reset.
+    expect(plan.keyframes).toHaveLength(6);
+
+    const region5 = ['e8', 'd1', 'd7']; // king untouched this ply (still e8) + the checking move's own from/to
+    const region6 = ['f8', 'e8']; // king's own move
+    const region7 = ['f8', 'd7', 'd8']; // king untouched this ply (now f8) + the checking move's own from/to
+
+    expect(plan.keyframes[1]).toEqual({ atMs: 1000, ...expectedCenter(region5), zoom: zoomForSquares(region5, SETTINGS) });
+    expect(plan.keyframes[2]).toEqual({ atMs: 1600, ...expectedCenter(region6), zoom: zoomForSquares(region6, SETTINGS) });
+    expect(plan.keyframes[3]).toEqual({ atMs: 2200, ...expectedCenter(region7), zoom: zoomForSquares(region7, SETTINGS) });
+
+    // Natural hold-end holds at the LAST tracked position, not the directive's own static box.
+    expect(plan.keyframes[4]).toEqual({ ...plan.keyframes[3], atMs: 2800 });
+
+    for (const k of plan.keyframes) {
+      expect(k.zoom).toBeGreaterThanOrEqual(1);
+      expect(k.zoom).toBeLessThanOrEqual(SETTINGS.maxZoom);
+    }
+  });
+
+  it('a capture ends tracking at that ply and falls back to the directive\'s own static region for the remainder — never a frozen shot of an empty square', () => {
+    const knight = pieceIdFor('w', 'n', 'g1');
+    const game = gameFromMoves([
+      moveRecord(5, 'w', 'n', 'g1', 'f3', 'Nf3', { pieceId: knight }),
+      moveRecord(6, 'b', 'p', 'g7', 'g5', 'g5'),
+      moveRecord(7, 'b', 'b', 'c8', 'f3', 'Bxf3', { capturedPieceId: knight })
+    ]);
+    const directives: CameraDirective[] = [{ atPly: 5, untilPly: 7, role: 'consequence', zoom: 1.5, squares: ['f3', 'g1'], evidenceRef: { kind: 'beat', id: 'b' } }];
+    const tracking: TrackingDirective[] = [
+      { fromPly: 5, toPly: 7, subject: { kind: 'piece', pieceId: knight }, role: 'consequence', priority: 1, evidenceRef: { kind: 'move', ply: 5 } }
+    ];
+    const plyAtMs = new Map([
+      [5, 1000],
+      [6, 1300],
+      [7, 1600]
+    ]);
+    const plyDurationMs = new Map([
+      [5, 300],
+      [6, 300],
+      [7, 300]
+    ]);
+
+    const plan = buildCameraPlan(directives, plyAtMs, plyDurationMs, 2500, RAMP_MS, null, tracking, game, SETTINGS);
+
+    // Only 2 tracked points (ply 7 is the capture ply — the knight is gone, no third point).
+    expect(plan.keyframes).toHaveLength(5);
+    expect(plan.keyframes[1]!.atMs).toBe(1000);
+    expect(plan.keyframes[2]!.atMs).toBe(1300);
+
+    // Fell back to the directive's OWN static region/zoom — not held at the knight's last square.
+    const staticCenter = expectedCenter(['f3', 'g1']);
+    expect(plan.keyframes[3]).toEqual({ atMs: 1900, ...staticCenter, zoom: 1.5 });
+    expect(plan.keyframes[3]).not.toEqual(plan.keyframes[2]);
+    expect(plan.keyframes[4]).toEqual({ atMs: 2500, centerX: 4, centerY: 4, zoom: 1 });
+  });
+
+  it('continues tracking the same PieceId across a promotion with no interruption', () => {
+    const pawn = pieceIdFor('w', 'p', 'a2'); // real starting square — pieceSquareAtPly validates membership
+    const game = gameFromMoves([
+      moveRecord(5, 'w', 'p', 'a7', 'a8', 'a8=Q', { pieceId: pawn, promotion: 'q' }),
+      moveRecord(6, 'b', 'k', 'e8', 'd8', 'Kd8'),
+      moveRecord(7, 'w', 'q', 'a8', 'a2', 'Qa2', { pieceId: pawn })
+    ]);
+    const directives: CameraDirective[] = [{ atPly: 5, untilPly: 7, role: 'consequence', zoom: 1.5, squares: ['a1', 'h8'], evidenceRef: { kind: 'beat', id: 'b' } }];
+    const tracking: TrackingDirective[] = [
+      { fromPly: 5, toPly: 7, subject: { kind: 'piece', pieceId: pawn }, role: 'consequence', priority: 1, evidenceRef: { kind: 'move', ply: 5 } }
+    ];
+    const plyAtMs = new Map([
+      [5, 1000],
+      [6, 1300],
+      [7, 1600]
+    ]);
+    const plyDurationMs = new Map([
+      [5, 300],
+      [6, 300],
+      [7, 300]
+    ]);
+
+    const plan = buildCameraPlan(directives, plyAtMs, plyDurationMs, 2500, RAMP_MS, null, tracking, game, SETTINGS);
+
+    // All 3 plies tracked — promotion never interrupts identity resolution.
+    expect(plan.keyframes).toHaveLength(6);
+    expect(plan.keyframes[1]!.atMs).toBe(1000);
+    expect(plan.keyframes[2]!.atMs).toBe(1300);
+    expect(plan.keyframes[3]!.atMs).toBe(1600);
+  });
+
+  it('a clip-window boundary reached mid-span truncates tracking exactly like a capture — falls back to the static region, never holds a stale position', () => {
+    const attacker = pieceIdFor('w', 'q', 'd1');
+    const game = gameFromMoves([
+      moveRecord(5, 'w', 'q', 'd1', 'd7', 'Qd7', { pieceId: attacker }),
+      moveRecord(6, 'b', 'k', 'e8', 'f8', 'Kf8'),
+      moveRecord(7, 'w', 'q', 'd7', 'd8', 'Qd8', { pieceId: attacker })
+    ]);
+    const directives: CameraDirective[] = [{ atPly: 5, untilPly: 7, role: 'consequence', zoom: 1.5, squares: ['a1', 'h8'], evidenceRef: { kind: 'beat', id: 'b' } }];
+    const tracking: TrackingDirective[] = [
+      { fromPly: 5, toPly: 7, subject: { kind: 'piece', pieceId: attacker }, role: 'consequence', priority: 1, evidenceRef: { kind: 'move', ply: 5 } }
+    ];
+    // ply 7 has no plyAtMs entry — simulates a windowed clip ending at ply 6.
+    const plyAtMs = new Map([
+      [5, 1000],
+      [6, 1300]
+    ]);
+    const plyDurationMs = new Map([
+      [5, 300],
+      [6, 300]
+    ]);
+
+    const plan = buildCameraPlan(directives, plyAtMs, plyDurationMs, 2200, RAMP_MS, null, tracking, game, SETTINGS);
+
+    expect(plan.keyframes).toHaveLength(5);
+    // untilPly's own timing is unavailable (ply 7 is outside the window), so
+    // buildCameraPlan's own pre-existing fallback bounds the dwell by atPly's
+    // own duration alone (1000 + 300) — unrelated to tracking, unchanged here.
+    const staticCenter = expectedCenter(['a1', 'h8']);
+    expect(plan.keyframes[3]).toEqual({ atMs: 1300, ...staticCenter, zoom: 1.5 });
+  });
+
+  it('terminal camera wins: tracking supplies WHERE within its own span, but the terminal re-engagement TIMING and shape are exactly the pre-existing gap-case sequence', () => {
+    const queen = pieceIdFor('w', 'q', 'd1');
+    const game = gameFromMoves([moveRecord(40, 'w', 'q', 'd1', 'e5', 'Qxe5#', { pieceId: queen })]);
+    const directives: CameraDirective[] = [{ atPly: 40, untilPly: 40, role: 'critical', zoom: 1.8, squares: ['e4', 'e5'], evidenceRef: { kind: 'beat', id: 'b' } }];
+    const tracking: TrackingDirective[] = [
+      { fromPly: 40, toPly: 40, subject: { kind: 'piece', pieceId: queen }, role: 'critical', priority: 1, evidenceRef: { kind: 'move', ply: 40 } }
+    ];
+    const climaxAtMs = 12850;
+    const durationMs = 2100;
+    const sceneDurationMs = 17050;
+    const terminalPlyAtMs = 16750;
+    const plyAtMs = new Map([[40, climaxAtMs]]);
+    const plyDurationMs = new Map([[40, durationMs]]);
+
+    const plan = buildCameraPlan(directives, plyAtMs, plyDurationMs, sceneDurationMs, RAMP_MS, terminalPlyAtMs, tracking, game, SETTINGS);
+
+    // Exactly the same atMs sequence as the pre-existing (untracked) Evergreen
+    // gap-case test above — terminal timing is completely unaffected by tracking.
+    expect(plan.keyframes.map((k) => k.atMs)).toEqual([0, 11650, 12850, 14950, 16350, 16750, 16850, 17050]);
+
+    // The pre-climax ramp (index 1) still lands exactly on the first (and only)
+    // tracked keyframe (index 2) — same atMs, and now the TRACKED center/zoom.
+    const region = ['e5', 'd1']; // queen's own destination + origin (dedupe of [to, from, to])
+    const center = expectedCenter(region);
+    const zoom = zoomForSquares(region, SETTINGS);
+    expect(plan.keyframes[1]).toEqual({ atMs: 11650, centerX: 4, centerY: 4, zoom: 1 });
+    expect(plan.keyframes[2]).toEqual({ atMs: 12850, ...center, zoom });
+
+    // Every subsequent terminal-branch keyframe (hold-end, re-engagement dip,
+    // re-zoom, final hold) rests on that SAME tracked position — proving the
+    // terminal logic itself is untouched, only fed a different center.
+    expect(plan.keyframes[3]).toEqual({ atMs: 14950, ...center, zoom });
+    expect(plan.keyframes[4]).toEqual({ atMs: 16350, ...center, zoom: 1 });
+    expect(plan.keyframes[5]).toEqual({ atMs: 16750, ...center, zoom });
+    expect(plan.keyframes[6]).toEqual({ atMs: 16850, ...center, zoom });
+    expect(plan.keyframes[7]).toEqual({ atMs: 17050, centerX: 4, centerY: 4, zoom: 1 });
+  });
+
+  it('leaves an unmatched directive\'s static framing completely unchanged when tracking applies only to a different directive', () => {
+    const queen = pieceIdFor('w', 'q', 'd1');
+    const game = gameFromMoves([
+      moveRecord(3, 'w', 'p', 'e2', 'e4', 'e4'),
+      moveRecord(6, 'w', 'q', 'd1', 'e5', 'Qxe5', { pieceId: queen })
+    ]);
+    const establishDirective: CameraDirective = { atPly: 3, untilPly: 3, role: 'establish', zoom: 1.2, squares: ['e2', 'e4'], evidenceRef: { kind: 'beat', id: 'setup' } };
+    const criticalDirective: CameraDirective = { atPly: 6, untilPly: 6, role: 'critical', zoom: 1.8, squares: ['d1', 'e5'], evidenceRef: { kind: 'beat', id: 'climax' } };
+    const tracking: TrackingDirective[] = [
+      { fromPly: 6, toPly: 6, subject: { kind: 'piece', pieceId: queen }, role: 'critical', priority: 1, evidenceRef: { kind: 'move', ply: 6 } }
+    ];
+    const plyAtMs = new Map([
+      [3, 500],
+      [6, 4000]
+    ]);
+    const plyDurationMs = new Map([
+      [3, 600],
+      [6, 2100]
+    ]);
+
+    const plan = buildCameraPlan([establishDirective, criticalDirective], plyAtMs, plyDurationMs, 8000, RAMP_MS, null, tracking, game, SETTINGS);
+
+    // The establish directive is entirely untouched: its own static box.
+    const establishCenter = expectedCenter(['e2', 'e4']);
+    expect(plan.keyframes[1]).toEqual({ atMs: 500, ...establishCenter, zoom: 1.2 });
+    expect(plan.keyframes[2]).toEqual({ atMs: 1100, ...establishCenter, zoom: 1.2 });
   });
 });
 

@@ -92,6 +92,8 @@ function cinematicPlan(annotationDirectives: readonly AnnotationDirective[]): Ci
     // tactical explanation channel is deliberately never a Moment/caption
     // source, so this stays empty in every Moment fixture.
     tacticalDirectives: [],
+    // Phase 18D — the tracking channel is camera-only, never a Moment/caption source either.
+    trackingDirectives: [],
     transitionDirectives: [],
     finalPositionIsTerminal: false,
     settings: DEFAULT_DIRECTOR_SETTINGS

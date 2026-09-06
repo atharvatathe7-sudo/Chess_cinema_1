@@ -180,6 +180,70 @@ export interface TacticalAnnotationDirective {
 }
 
 // ============================================================
+// Tracking (Phase 18D Batch 1)
+// ============================================================
+
+/**
+ * Phase 18D — the single-subject camera-tracking channel: "follow this one
+ * verified piece/king through this bounded span." Deliberately its own list
+ * rather than a property on CameraDirective, for the same reason Phase 18C
+ * kept tactical annotations off AnnotationDirectiveKind rather than widening
+ * it: CameraDirective's existing contract (camera.ts's merge logic, and
+ * lowerToTimeline.ts's pre-climax ramp / terminal re-engagement) all assume
+ * ONE static region per directive. Bolting a "this one actually moves" flag
+ * onto it would force every one of those call sites to branch on it anyway,
+ * with none of the clarity of a separate, single-purpose type — and would be
+ * exactly the "redesign CameraDirective" this batch is required not to do.
+ *
+ * A TrackingDirective instead OVERLAYS one existing CameraDirective's own
+ * atPly..untilPly span (see lowerToTimeline.ts's buildCameraPlan): the
+ * CameraDirective still owns WHEN / WHICH ROLE / WHAT ZOOM AT REST: tracking
+ * only supplies WHERE the camera points ply-by-ply within that span.
+ */
+
+/**
+ * Deliberately just a stable PieceId, not a separate king/piece
+ * discriminator: a king's PieceId is exactly as stable and resolvable
+ * (including through castling, for its entire life) as any other piece's —
+ * see pgn/assignPieceIdentities.ts, which assigns and moves the king through
+ * the SAME generic occupancy mechanism every other piece uses (castling's
+ * paired rook is the only special case, and it is its own separate
+ * RookMove). Keeping one subject shape means tracking.ts's per-ply resolver
+ * (pieceSquareAtPly) never special-cases "is this the king" — subject
+ * SELECTION (tracking.ts's kingCandidate) is the only place that cares which
+ * physical piece a candidate is.
+ */
+export type TrackingSubject = { readonly kind: 'piece'; readonly pieceId: PieceId };
+
+/**
+ * Which already-verified fact justified this tracking choice — Batch 1
+ * supports exactly two, both reliably resolvable from data that already
+ * exists. 'king-safety' mirrors VisualRegionSource's own naming for the
+ * identical underlying fact (a checked/mated king, from
+ * PlySignals.deliversCheck/deliversMate — never a new detector). 'move' is
+ * the honest fallback: the single piece that made every move across the
+ * span, when — and only when — it is genuinely the same piece throughout
+ * (see tracking.ts's moverCandidate). A future batch's mechanism-attacker
+ * case would add a third variant here; Batch 1 deliberately does not,
+ * because resolving an attacker that didn't itself just move requires the
+ * deferred occupancyAfterPly primitive.
+ */
+export type TrackingEvidenceRef = { readonly kind: 'king-safety'; readonly ply: number } | { readonly kind: 'move'; readonly ply: number };
+
+export interface TrackingDirective {
+  /** Always equal to the overlaid CameraDirective's own atPly — see lowerToTimeline.ts's buildCameraPlan. */
+  readonly fromPly: number;
+  /** Inclusive; always equal to that same CameraDirective's own untilPly. Batch 1 never tracks a sub-slice of a directive's span — see the module doc comment above. */
+  readonly toPly: number;
+  readonly subject: TrackingSubject;
+  /** The CameraDirective this directive overlays. Batch 1 only ever produces 'critical' or 'consequence' — never 'establish'/'payoff', so tracking can never contest the terminal camera's own authority over the final beat. See tracking.ts's deriveTrackingDirectives. */
+  readonly role: CameraRole;
+  /** Lower wins. Fixed per evidence kind (TRACKING_PRIORITY in tracking.ts) — a stable ranking, never a per-game judgement. */
+  readonly priority: number;
+  readonly evidenceRef: TrackingEvidenceRef;
+}
+
+// ============================================================
 // Settings
 // ============================================================
 
@@ -308,6 +372,15 @@ export interface CinematicPlan {
    * (state/moments.ts) is untouched by it — see TacticalAnnotationDirective.
    */
   readonly tacticalDirectives: readonly TacticalAnnotationDirective[];
+  /**
+   * Phase 18D Batch 1 — the single-subject camera-TRACKING channel. At most
+   * one entry per 'critical'/'consequence' CameraDirective, each overlaying
+   * that directive's own atPly..untilPly span exactly (see
+   * TrackingDirective's own doc comment). Empty whenever no reliable subject
+   * exists — "no tracking is preferable to incorrect tracking" — and, like
+   * tacticalDirectives, never consumed by the Moment/caption layer.
+   */
+  readonly trackingDirectives: readonly TrackingDirective[];
   /** Ascending by beforePly. */
   readonly transitionDirectives: readonly TransitionDirective[];
   /**

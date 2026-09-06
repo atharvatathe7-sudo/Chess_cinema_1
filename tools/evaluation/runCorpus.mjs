@@ -379,6 +379,17 @@ async function capture(page, pgnText) {
           acc[d.kind] = (acc[d.kind] ?? 0) + 1;
           return acc;
         }, {}),
+        // Phase 18D Batch 1 — the single-subject camera-tracking channel,
+        // captured the same way tacticalDirectives is: separately, so a
+        // corpus diff shows tracking output without disturbing anything else.
+        trackingDirectives: cinematicPlan.trackingDirectives.map((d) => ({
+          role: d.role,
+          fromPly: d.fromPly,
+          toPly: d.toPly,
+          fromSan: san(d.fromPly),
+          subjectPieceId: d.subject.pieceId,
+          evidence: d.evidenceRef.kind
+        })),
         settings: cinematicPlan.settings
       },
       moments: momentRows,

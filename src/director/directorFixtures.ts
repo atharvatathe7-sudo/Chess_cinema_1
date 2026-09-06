@@ -30,7 +30,15 @@ import {
 
 const STANDARD_STARTING_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 
-export function moveRecord(ply: number, color: 'w' | 'b', pieceType: MoveRecord['pieceType'], from: string, to: string, san: string): MoveRecord {
+export function moveRecord(
+  ply: number,
+  color: 'w' | 'b',
+  pieceType: MoveRecord['pieceType'],
+  from: string,
+  to: string,
+  san: string,
+  overrides: Partial<MoveRecord> = {}
+): MoveRecord {
   return {
     ply,
     san,
@@ -39,7 +47,8 @@ export function moveRecord(ply: number, color: 'w' | 'b', pieceType: MoveRecord[
     color,
     pieceType,
     pieceId: pieceIdFor(color, pieceType, from),
-    isEnPassant: false
+    isEnPassant: false,
+    ...overrides
   };
 }
 

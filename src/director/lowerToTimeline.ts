@@ -3,13 +3,17 @@ import type { StoryArchetype, StoryPlan } from '../story/types';
 import type { Annotation, AnnotationBeat, CameraKeyframe, CameraPlan, MoveBeat, Scene, Timeline } from '../timeline/types';
 import { boundsOfSquares } from '../render/coords';
 import { deriveClipWindow } from './clipWindow';
+import { zoomForSquares } from './camera';
+import { pieceSquareAtPly } from './tracking';
 import type {
   AnnotationDirective,
   AnnotationDirectiveKind,
   CameraDirective,
   CinematicPlan,
+  DirectorSettings,
   TacticalAnnotationDirective,
-  TacticalAnnotationKind
+  TacticalAnnotationKind,
+  TrackingDirective
 } from './types';
 
 /**
@@ -216,6 +220,103 @@ function centerOfSquares(squares: readonly string[]): { centerX: number; centerY
   return { centerX: (bounds.minX + bounds.maxX) / 2, centerY: (bounds.minY + bounds.maxY) / 2 };
 }
 
+/**
+ * Phase 18D Batch 1 — what a CameraDirective's own dwell should actually
+ * show: either the plain static box (no tracking, or tracking that could
+ * not be honestly applied), or a per-ply moving sequence.
+ *
+ * `points` are extra keyframes to insert IN PLACE OF the single static
+ * "start" keyframe buildCameraPlan would otherwise push — empty whenever
+ * tracking does not apply, which is exactly how an empty trackingDirectives
+ * list reproduces today's plan byte-for-byte (see lowerToTimeline.test.ts's
+ * regression for this). `centerX/centerY/zoom` are the RESTING values used
+ * for everything after that — the natural hold-end keyframe, the pre-climax
+ * ramp's landing target when it lands on THIS directive, and (for the last
+ * directive) every terminal/no-terminal keyframe below — exactly the role
+ * the single static center/zoom used to fill.
+ */
+interface DirectiveFraming {
+  readonly points: readonly CameraKeyframe[];
+  readonly centerX: number;
+  readonly centerY: number;
+  readonly zoom: number;
+}
+
+/**
+ * Resolves a directive's own framing, tracked or not. Never emits a
+ * keyframe for a ply outside the windowed clip (plyAtMs has no entry) —
+ * the same safe-omission convention buildAnnotationBeats/buildTacticalBeats
+ * already use — and truncates cleanly the moment the tracked subject can no
+ * longer be resolved (captured, or the clip window ends mid-span), falling
+ * back to the directive's own static region for the remainder: "do not
+ * fabricate a position" (Phase 18D conflict rule 8). A tracked ply's own
+ * zoom is evidence-derived exactly like Phase 18B's static zoom — never a
+ * bare square — by unioning the subject's own square with that ply's own
+ * move geometry (from/to), the same fallback tier visualRelevance.ts's own
+ * moveFallbackRegion already uses, before calling the SAME zoomForSquares
+ * Phase 18B established.
+ */
+function framingFor(
+  directive: CameraDirective,
+  tracking: TrackingDirective | undefined,
+  game: GameRecord | undefined,
+  settings: DirectorSettings | undefined,
+  plyAtMs: ReadonlyMap<number, number>
+): DirectiveFraming {
+  const fallback = centerOfSquares(directive.squares);
+  const staticFraming: DirectiveFraming = { points: [], centerX: fallback.centerX, centerY: fallback.centerY, zoom: directive.zoom };
+  if (!tracking || !game || !settings) return staticFraming;
+
+  const trackedPlies = game.moves.filter((m) => m.ply >= tracking.fromPly && m.ply <= tracking.toPly).map((m) => m.ply);
+  const points: CameraKeyframe[] = [];
+  let lastPoint: { centerX: number; centerY: number; zoom: number } | null = null;
+  // Set the moment tracking cannot continue for the REST of its own
+  // declared span — a capture, or a clip-window boundary reached mid-span
+  // (clip windows are always one contiguous range, so once a ply is
+  // missing from plyAtMs every later ply is missing too). Either way,
+  // "the subject cannot be resolved at a ply" (Phase 18D conflict rule 8)
+  // means falling back to the directive's own static region for whatever
+  // remains — never holding on a stale or nonexistent position. This is
+  // distinct from tracking simply reaching its own toPly with nothing gone
+  // wrong, where holding at the last real tracked position is the truthful
+  // choice (see `resting` below).
+  let truncatedEarly = false;
+
+  for (const ply of trackedPlies) {
+    const atMs = plyAtMs.get(ply);
+    if (atMs === undefined) {
+      // Outside the selected clip window. If this is the very FIRST tracked
+      // ply, there is nothing to track at all for this directive; fall back
+      // entirely rather than start mid-sequence.
+      if (points.length === 0) return staticFraming;
+      truncatedEarly = true;
+      break;
+    }
+
+    const square = pieceSquareAtPly(game, tracking.subject.pieceId, ply);
+    if (square === null) {
+      truncatedEarly = true;
+      break;
+    }
+
+    const move = game.moves.find((m) => m.ply === ply)!;
+    const regionSquares = [...new Set([square, move.from, move.to])];
+    const { centerX, centerY } = centerOfSquares(regionSquares);
+    const zoom = zoomForSquares(regionSquares, settings);
+    points.push({ atMs, centerX, centerY, zoom });
+    lastPoint = { centerX, centerY, zoom };
+  }
+
+  if (points.length === 0) return staticFraming;
+  const resting = truncatedEarly || !lastPoint ? { centerX: fallback.centerX, centerY: fallback.centerY, zoom: directive.zoom } : lastPoint;
+  return { points, centerX: resting.centerX, centerY: resting.centerY, zoom: resting.zoom };
+}
+
+/** A TrackingDirective always overlays exactly one CameraDirective's own span — see TrackingDirective's own doc comment. */
+function trackingFor(directive: CameraDirective, trackingDirectives: readonly TrackingDirective[]): TrackingDirective | undefined {
+  return trackingDirectives.find((t) => t.role === directive.role && t.fromPly === directive.atPly && t.toPly === directive.untilPly);
+}
+
 export function buildCameraPlan(
   directives: readonly CameraDirective[],
   plyAtMs: ReadonlyMap<number, number>,
@@ -231,7 +332,19 @@ export function buildCameraPlan(
    * its role — establish/critical/consequence/payoff), since that is the
    * only directive whose hold can run into the scene's own end.
    */
-  terminalPlyAtMs: number | null
+  terminalPlyAtMs: number | null,
+  /**
+   * Phase 18D Batch 1 — optional camera tracking, additive only. Every
+   * existing call site (every test written before this batch) omits these
+   * three trailing parameters and gets byte-identical output: an empty
+   * array here means trackingFor() never matches anything, so every
+   * directive takes the exact code path it always has. `game`/`settings`
+   * are only needed to actually resolve a tracked subject's square and its
+   * per-ply zoom; they are optional for the same reason.
+   */
+  trackingDirectives: readonly TrackingDirective[] = [],
+  game?: GameRecord,
+  settings?: DirectorSettings
 ): CameraPlan {
   if (directives.length === 0) {
     return { keyframes: [BASE_CAMERA_KEYFRAME] };
@@ -250,8 +363,8 @@ export function buildCameraPlan(
     const untilDurationMs = plyDurationMs.get(directive.untilPly);
     const naturalHoldEndMs = untilAtMs !== undefined && untilDurationMs !== undefined ? untilAtMs + untilDurationMs : atMs + (plyDurationMs.get(directive.atPly) ?? 0);
 
-    const { centerX, centerY } = centerOfSquares(directive.squares);
-    const zoom = directive.zoom;
+    const framing = framingFor(directive, trackingFor(directive, trackingDirectives), game, settings, plyAtMs);
+    const { centerX, centerY, zoom } = framing;
 
     // Phase 12B — hold at the base full-board framing until shortly before
     // the 'critical' directive, so easeOutCubic's own eased ramp
@@ -276,7 +389,17 @@ export function buildCameraPlan(
     // Zoom in, then hold at the same values through this directive's own
     // dwell time — two identical-value keyframes at different atMs create a
     // genuine hold under resolveCamera.ts's own interpolation (unchanged).
-    keyframes.push({ atMs, centerX, centerY, zoom });
+    // Phase 18D Batch 1 — when tracking resolved one or more per-ply points
+    // for this directive, they replace the single static "zoom in" keyframe
+    // (framing.points[0] is always at this same atMs — see trackingFor's own
+    // fromPly===directive.atPly invariant); everything below this still
+    // reads centerX/centerY/zoom, which framingFor already set to the
+    // tracked sequence's own resting position, so no other line changes.
+    if (framing.points.length > 0) {
+      for (const point of framing.points) keyframes.push(point);
+    } else {
+      keyframes.push({ atMs, centerX, centerY, zoom });
+    }
 
     if (!isLast) {
       keyframes.push({ atMs: naturalHoldEndMs, centerX, centerY, zoom });
@@ -410,7 +533,17 @@ export function lowerToTimeline(game: GameRecord, plan: CinematicPlan, story: St
   const windowLastMove = consideredMoves[consideredMoves.length - 1];
   const windowReachesGameEnd = windowLastMove !== undefined && gameLastMove !== undefined && windowLastMove.ply === gameLastMove.ply;
   const terminalPlyAtMs = plan.finalPositionIsTerminal && windowReachesGameEnd && windowLastMove ? (plyAtMs.get(windowLastMove.ply) ?? null) : null;
-  const cameraPlan = buildCameraPlan(plan.cameraDirectives, plyAtMs, plyDurationMs, totalMs, plan.settings.preClimaxRampMs, terminalPlyAtMs);
+  const cameraPlan = buildCameraPlan(
+    plan.cameraDirectives,
+    plyAtMs,
+    plyDurationMs,
+    totalMs,
+    plan.settings.preClimaxRampMs,
+    terminalPlyAtMs,
+    plan.trackingDirectives,
+    game,
+    plan.settings
+  );
 
   const scene: Scene = {
     id: SCENE_ID,

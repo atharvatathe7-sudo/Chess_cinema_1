@@ -3,11 +3,13 @@ import type { GameAnalysis, PlyAnalysis } from '../analysis/types';
 import type { GameRecord, MoveRecord } from '../pgn/types';
 import type { GameUnderstanding } from '../understanding/types';
 import { DEFAULT_STORY_SETTINGS, STORY_SCHEMA_VERSION } from '../story/types';
-import type { ArchetypeSignal, BeatRole, StoryArchetype, StoryBeat, StoryPlan } from '../story/types';
+import type { ArchetypeSignal, BeatRole, MoveTreatment, StoryArchetype, StoryBeat, StoryPlan } from '../story/types';
 import { buildStoryPlan } from '../story/buildStoryPlan';
 import {
   analysisFrom,
   causeConsequence,
+  centralConflict,
+  consequenceChain,
   evidence,
   forcedSequence,
   gameArc,
@@ -230,5 +232,96 @@ export function zeroMoveScenario(): DirectorScenario {
   const analysis = analysisFrom([]);
   const understanding = understandingFrom({ plies: [] });
   const story = buildStoryPlan(game, analysis, understanding, DEFAULT_STORY_SETTINGS);
+  return { game, analysis, understanding, story };
+}
+
+/**
+ * Phase 18A — Cinematic Clip Windowing regression fixture.
+ *
+ * A 10-ply game whose StoryPlan is hand-built (via story/storyFixtures.ts's
+ * centralConflict/consequenceChain, the same "hand-supply only the fields
+ * you care about" style storyPlanFrom already establishes) rather than
+ * produced by the real buildStoryPlan pipeline — this fixture exists to
+ * exercise deriveClipWindow + lowerToTimeline's terminal-camera fix, not
+ * buildStoryPlan's own Gate 1/Gate 2 selection logic, which stays entirely
+ * out of scope here.
+ *
+ * The consequence chain: antecedents [3,4], trigger (critical) ply 5,
+ * consequents [6,7], payoff material-settled @ply7. deriveClipWindow must
+ * therefore produce a window covering ONLY plies 3-7 — five of this
+ * fixture's ten plies — deliberately excluding plies 1,2,8,9,10.
+ *
+ * Ply 10 is given a genuine terminal evaluation (checkmate-shaped:
+ * evaluationAfter.kind === 'terminal'), reusing STANDARD_STARTING_FEN as a
+ * structurally-valid stand-in FEN (the same trick richMateEndingScenario
+ * already uses) so buildCinematicPlan's finalPositionIsTerminal is true —
+ * while the selected chain's own endPly (7) never reaches it. This is
+ * exactly the shape that regresses lowerToTimeline's terminal camera
+ * treatment if it naively keys off game.moves' raw last index instead of
+ * the WINDOW's own last move: see lowerToTimeline.test.ts's dedicated test.
+ */
+export function windowedMomentScenario(): DirectorScenario {
+  const moves = [
+    moveRecord(1, 'w', 'p', 'e2', 'e4', 'e4'),
+    moveRecord(2, 'b', 'p', 'e7', 'e5', 'e5'),
+    moveRecord(3, 'w', 'n', 'g1', 'f3', 'Nf3'), // antecedent
+    moveRecord(4, 'b', 'n', 'b8', 'c6', 'Nc6'), // antecedent
+    moveRecord(5, 'w', 'b', 'f1', 'b5', 'Bb5'), // critical (trigger) ply
+    moveRecord(6, 'b', 'p', 'a7', 'a6', 'a6'), // consequent
+    moveRecord(7, 'w', 'p', 'd2', 'd4', 'd4'), // consequent + payoff ply
+    moveRecord(8, 'b', 'p', 'd7', 'd5', 'd5'), // outside the window
+    moveRecord(9, 'w', 'n', 'b1', 'c3', 'Nc3'), // outside the window
+    moveRecord(10, 'b', 'q', 'd8', 'h4', 'Qh4') // outside the window; the game's real terminal move
+  ];
+  const game = gameFromMoves(moves);
+
+  const analysisPlies: PlyAnalysis[] = moves.map((m) =>
+    m.ply === 10
+      ? plyAnalysis(10, { sideToMove: 'b', movePlayedSan: 'Qh4', fenAfter: STANDARD_STARTING_FEN, evaluationAfter: { kind: 'terminal', result: 'white-wins' } })
+      : plyAnalysis(m.ply, { sideToMove: m.color, movePlayedSan: m.san })
+  );
+  const analysis = analysisFrom(analysisPlies);
+
+  const understanding = understandingFrom({
+    plies: moves.map((m) => plySemantics(m.ply, plySignals(m.pieceId), m.ply === 5 ? { qualityClass: 'inaccuracy' } : {}))
+  });
+
+  const setupBeat = storyBeat('beat-setup', 'setup', [3, 4]);
+  const climaxBeat = storyBeat('beat-climax', 'climax', [5]);
+  const consequenceBeat = storyBeat('beat-consequence', 'consequence', [6, 7]);
+
+  const chain = consequenceChain(5, {
+    antecedents: [
+      { ply: 3, linkType: 'same-sequence', evidenceId: 'seq-a' },
+      { ply: 4, linkType: 'same-sequence', evidenceId: 'seq-a' }
+    ],
+    consequents: [
+      { ply: 6, linkType: 'same-sequence', evidenceId: 'seq-a' },
+      { ply: 7, linkType: 'same-sequence', evidenceId: 'seq-a' }
+    ],
+    payoff: { kind: 'material-settled', atPly: 7, netMaterialChange: 900 },
+    reachesResult: false
+  });
+
+  const moveTreatment: { readonly ply: number; readonly treatment: MoveTreatment }[] = [
+    { ply: 1, treatment: 'compressible' },
+    { ply: 2, treatment: 'compressible' },
+    { ply: 3, treatment: 'setup' },
+    { ply: 4, treatment: 'setup' },
+    { ply: 5, treatment: 'spine' },
+    { ply: 6, treatment: 'spine' },
+    { ply: 7, treatment: 'spine' },
+    { ply: 8, treatment: 'compressible' },
+    { ply: 9, treatment: 'compressible' },
+    { ply: 10, treatment: 'compressible' }
+  ];
+
+  const story = storyPlanFrom({
+    centralConflict: centralConflict('tp-5', 5, { consequenceChain: chain, tier: 'A' }),
+    noConflictReason: undefined,
+    beats: [setupBeat, climaxBeat, consequenceBeat],
+    moveTreatment
+  });
+
   return { game, analysis, understanding, story };
 }

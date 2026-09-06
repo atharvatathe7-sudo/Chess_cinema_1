@@ -114,7 +114,7 @@ export async function runDirection(
     // are all deterministic functions of already-materialized inputs).
     const story = buildStoryPlan(game.gameRecord, analysis.result, understanding);
     const cinematicPlan = buildCinematicPlan(game.gameRecord, analysis.result, understanding, story);
-    const timeline = lowerToTimeline(game.gameRecord, cinematicPlan);
+    const timeline = lowerToTimeline(game.gameRecord, cinematicPlan, story);
 
     try {
       assertValidTimeline(timeline);

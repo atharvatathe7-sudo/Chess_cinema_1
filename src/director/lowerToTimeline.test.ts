@@ -5,7 +5,7 @@ import { resolveCamera } from '../render/resolveCamera';
 import type { CameraDirective } from './types';
 import { buildCinematicPlan } from './buildCinematicPlan';
 import { buildCameraPlan, lowerToTimeline, TERMINAL_ZOOM_IN_MS, TERMINAL_ZOOM_OUT_MS } from './lowerToTimeline';
-import { prunedPlyScenario, quietGameScenario, richMateEndingScenario, zeroMoveScenario } from './directorFixtures';
+import { prunedPlyScenario, quietGameScenario, richMateEndingScenario, windowedMomentScenario, zeroMoveScenario } from './directorFixtures';
 import { DEFAULT_DIRECTOR_SETTINGS } from './types';
 
 function moveBeats(timeline: ReturnType<typeof lowerToTimeline>): MoveBeat[] {
@@ -16,21 +16,21 @@ describe('lowerToTimeline', () => {
   it('passes assertValidTimeline with zero violations for a rich, multi-beat plan', () => {
     const { game, analysis, understanding, story } = richMateEndingScenario();
     const plan = buildCinematicPlan(game, analysis, understanding, story);
-    const timeline = lowerToTimeline(game, plan);
+    const timeline = lowerToTimeline(game, plan, story);
     expect(() => assertValidTimeline(timeline)).not.toThrow();
   });
 
   it('passes assertValidTimeline for a quiet game', () => {
     const { game, analysis, understanding, story } = quietGameScenario();
     const plan = buildCinematicPlan(game, analysis, understanding, story);
-    const timeline = lowerToTimeline(game, plan);
+    const timeline = lowerToTimeline(game, plan, story);
     expect(() => assertValidTimeline(timeline)).not.toThrow();
   });
 
   it('produces a valid, static, zero-duration Scene for a zero-move game', () => {
     const { game, analysis, understanding, story } = zeroMoveScenario();
     const plan = buildCinematicPlan(game, analysis, understanding, story);
-    const timeline = lowerToTimeline(game, plan);
+    const timeline = lowerToTimeline(game, plan, story);
     expect(timeline.scenes).toHaveLength(1);
     expect(timeline.scenes[0]!.beats).toEqual([]);
     expect(timeline.scenes[0]!.durationMs).toBe(0);
@@ -54,7 +54,7 @@ describe('lowerToTimeline', () => {
     const prunedEntry = plan.moveTreatmentPlan.find((t) => t.ply === 2);
     expect(prunedEntry).toEqual({ ply: 2, pacing: 'skipped', durationMultiplier: 0 });
 
-    const timeline = lowerToTimeline(game, plan);
+    const timeline = lowerToTimeline(game, plan, story);
     const beats = moveBeats(timeline).sort((a, b) => a.atMs - b.atMs);
     expect(beats).toHaveLength(3);
 
@@ -102,7 +102,7 @@ describe('lowerToTimeline', () => {
   it('realizes a beat-boundary pause as a plain gap between beats, not a new Beat kind', () => {
     const { game, analysis, understanding, story } = richMateEndingScenario();
     const plan = buildCinematicPlan(game, analysis, understanding, story);
-    const timeline = lowerToTimeline(game, plan);
+    const timeline = lowerToTimeline(game, plan, story);
     const beats = moveBeats(timeline).sort((a, b) => a.atMs - b.atMs);
 
     expect(plan.transitionDirectives.length).toBeGreaterThan(0);
@@ -123,7 +123,7 @@ describe('lowerToTimeline', () => {
   it('computes total scene duration as the sum of per-ply durations plus transition pauses', () => {
     const { game, analysis, understanding, story } = richMateEndingScenario();
     const plan = buildCinematicPlan(game, analysis, understanding, story);
-    const timeline = lowerToTimeline(game, plan);
+    const timeline = lowerToTimeline(game, plan, story);
     const beats = moveBeats(timeline);
 
     const sumDurations = plan.moveTreatmentPlan.reduce(
@@ -143,22 +143,22 @@ describe('lowerToTimeline', () => {
   it('is deterministic: two calls on the same CinematicPlan match byte-for-byte', () => {
     const { game, analysis, understanding, story } = richMateEndingScenario();
     const plan = buildCinematicPlan(game, analysis, understanding, story);
-    const first = lowerToTimeline(game, plan);
-    const second = lowerToTimeline(game, plan);
+    const first = lowerToTimeline(game, plan, story);
+    const second = lowerToTimeline(game, plan, story);
     expect(JSON.stringify(first)).toEqual(JSON.stringify(second));
   });
 
   it('produces a camera plan with a single static full-board keyframe when there is no climax beat', () => {
     const { game, analysis, understanding, story } = quietGameScenario();
     const plan = buildCinematicPlan(game, analysis, understanding, story);
-    const timeline = lowerToTimeline(game, plan);
+    const timeline = lowerToTimeline(game, plan, story);
     expect(timeline.scenes[0]!.cameraPlan.keyframes).toEqual([{ atMs: 0, centerX: 4, centerY: 4, zoom: 1 }]);
   });
 
   it('produces a zoom-in/hold/zoom-out camera plan anchored on the climax ply', () => {
     const { game, analysis, understanding, story } = richMateEndingScenario();
     const plan = buildCinematicPlan(game, analysis, understanding, story);
-    const timeline = lowerToTimeline(game, plan);
+    const timeline = lowerToTimeline(game, plan, story);
     const keyframes = timeline.scenes[0]!.cameraPlan.keyframes;
     expect(keyframes.length).toBeGreaterThanOrEqual(4);
     expect(keyframes[0]).toEqual({ atMs: 0, centerX: 4, centerY: 4, zoom: 1 });
@@ -174,7 +174,7 @@ describe('lowerToTimeline', () => {
   it('threads preClimaxRampMs through the real buildCinematicPlan -> lowerToTimeline pipeline correctly', () => {
     const { game, analysis, understanding, story } = richMateEndingScenario();
     const plan = buildCinematicPlan(game, analysis, understanding, story);
-    const timeline = lowerToTimeline(game, plan);
+    const timeline = lowerToTimeline(game, plan, story);
     const keyframes = timeline.scenes[0]!.cameraPlan.keyframes;
     const climaxKeyframe = keyframes.find((k) => k.zoom === DEFAULT_DIRECTOR_SETTINGS.climaxZoom);
     expect(climaxKeyframe).toBeDefined();
@@ -474,5 +474,72 @@ describe('buildCameraPlan — Phase 13B terminal payoff', () => {
 
     assertAscending(plan.keyframes);
     expect(plan.keyframes[plan.keyframes.length - 1]).toEqual({ atMs: sceneDurationMs, centerX: 4, centerY: 4, zoom: 1 });
+  });
+});
+
+/**
+ * Phase 18A — Cinematic Clip Windowing integration coverage. deriveClipWindow
+ * itself is covered exhaustively, in isolation, by clipWindow.test.ts; these
+ * tests exist only to prove lowerToTimeline actually applies that window to
+ * the real MoveBeat/CameraPlan/Scene output, and — the one mandatory
+ * regression fix for this batch — that the terminal camera treatment never
+ * fires on a ply that is not actually the WINDOW's own last move, even when
+ * CinematicPlan.finalPositionIsTerminal is true for the real, unwindowed game.
+ */
+describe('lowerToTimeline — Phase 18A clip windowing', () => {
+  it('produces a Scene covering only the windowed plies (3-7 of a 10-ply game), strictly shorter than the full game', () => {
+    const { game, analysis, understanding, story } = windowedMomentScenario();
+    const plan = buildCinematicPlan(game, analysis, understanding, story);
+    const timeline = lowerToTimeline(game, plan, story);
+    const beats = moveBeats(timeline).sort((a, b) => a.atMs - b.atMs);
+
+    expect(beats.map((b) => b.resultingPly)).toEqual([3, 4, 5, 6, 7]);
+    expect(timeline.scenes[0]!.startPly).toBe(2); // game.positions index for "just before ply 3"
+    expect(() => assertValidTimeline(timeline)).not.toThrow();
+  });
+
+  it('does NOT fire the terminal camera treatment on a truncated/payoff-short window, even though the real, unwindowed game ends in a genuine terminal result', () => {
+    const { game, analysis, understanding, story } = windowedMomentScenario();
+    const plan = buildCinematicPlan(game, analysis, understanding, story);
+
+    // Precondition: the real game (all 10 plies) DOES end in a terminal
+    // result — if this ever stops holding, the fixture, not the assertions
+    // below, needs revisiting.
+    expect(plan.finalPositionIsTerminal).toBe(true);
+    expect(game.moves[game.moves.length - 1]!.ply).toBe(10);
+
+    const timeline = lowerToTimeline(game, plan, story);
+    const beats = moveBeats(timeline);
+    // The window's own last move is ply 7, never ply 10.
+    expect(Math.max(...beats.map((b) => b.resultingPly))).toBe(7);
+
+    // No keyframe in the resulting CameraPlan reaches climaxZoom a second
+    // time near the end of the scene the way Phase 13B's terminal
+    // re-engagement would — the only climaxZoom keyframes present are the
+    // ones the climax beat itself (ply 5) already produces.
+    const keyframes = timeline.scenes[0]!.cameraPlan.keyframes;
+    const climaxZoomKeyframes = keyframes.filter((k) => k.zoom === DEFAULT_DIRECTOR_SETTINGS.climaxZoom);
+    for (const k of climaxZoomKeyframes) {
+      expect(k.atMs).toBeLessThan(timeline.scenes[0]!.durationMs);
+    }
+    // The scene always resets to full-board framing at its own true end.
+    expect(keyframes[keyframes.length - 1]).toEqual({
+      atMs: timeline.scenes[0]!.durationMs,
+      centerX: 4,
+      centerY: 4,
+      zoom: 1
+    });
+    expect(() => assertValidTimeline(timeline)).not.toThrow();
+  });
+
+  it('abstention (centralConflict === null) preserves the pre-Phase-18A Full Game behavior exactly: every move considered, scene starting at ply 0', () => {
+    const { game, analysis, understanding, story } = quietGameScenario();
+    expect(story.centralConflict).toBeNull();
+    const plan = buildCinematicPlan(game, analysis, understanding, story);
+    const timeline = lowerToTimeline(game, plan, story);
+    const beats = moveBeats(timeline);
+    expect(beats).toHaveLength(game.moves.length);
+    expect(timeline.scenes[0]!.startPly).toBe(0);
+    expect(timeline.scenes[0]!.startPositionFen).toBe(game.positions[0]!.fen);
   });
 });

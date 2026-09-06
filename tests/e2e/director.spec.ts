@@ -85,7 +85,8 @@ async function probeDirector(page: import('@playwright/test').Page, pgn: string)
     const lowerMod = (await import(/* @vite-ignore */ lowerPath)) as {
       lowerToTimeline: (
         game: unknown,
-        plan: unknown
+        plan: unknown,
+        story: unknown
       ) => {
         scenes: {
           id: string;
@@ -144,7 +145,7 @@ async function probeDirector(page: import('@playwright/test').Page, pgn: string)
     const plan2 = directorPlanMod.buildCinematicPlan(parsed.value, analysis.value, understanding.value, story);
     const determinismMatch = JSON.stringify(plan1) === JSON.stringify(plan2);
 
-    const timeline = lowerMod.lowerToTimeline(parsed.value, plan1);
+    const timeline = lowerMod.lowerToTimeline(parsed.value, plan1, story);
 
     let timelineValid = true;
     try {
@@ -303,7 +304,7 @@ test('a genuinely pruned (zero-duration) ply lowers to a Timeline the real Rende
       };
     };
     const lowerMod = (await import(/* @vite-ignore */ lowerPath)) as {
-      lowerToTimeline: (game: unknown, plan: unknown) => {
+      lowerToTimeline: (game: unknown, plan: unknown, story: unknown) => {
         scenes: { id: string; beats: { kind: string; durationMs?: number }[] }[];
       };
     };
@@ -324,7 +325,7 @@ test('a genuinely pruned (zero-duration) ply lowers to a Timeline the real Rende
     const prunedEntry = plan.moveTreatmentPlan.find((t) => t.pacing === 'skipped');
     if (!prunedEntry) return { ok: false, error: 'fixture did not produce a skipped-pacing ply' };
 
-    const timeline = lowerMod.lowerToTimeline(game, plan);
+    const timeline = lowerMod.lowerToTimeline(game, plan, story);
     const moveBeats = timeline.scenes[0]!.beats.filter((b) => b.kind === 'move');
     const zeroDurationBeatExists = moveBeats.some((b) => b.durationMs === 0);
 

@@ -1,4 +1,4 @@
-import type { StoryArchetype } from '../story/types';
+import type { NoConflictReason, StoryArchetype } from '../story/types';
 
 /**
  * Phase 2.4 — Cinematic Director data model.
@@ -108,6 +108,15 @@ export interface DirectorSettings {
    * segment of the camera plan.
    */
   readonly preClimaxRampMs: number;
+  /**
+   * Phase 18A — a conservative safety-valve ceiling on how many plies a
+   * windowed Cinematic Moment export may span (inclusive, startPly..endPly).
+   * See clipWindow.ts's deriveClipWindow: exceeding this trims SETUP first,
+   * never mid-consequence, and sets ClipWindow.truncated = true. Has no
+   * effect on the Full Game path (timeline/buildTrivialTimeline.ts), which
+   * clip windowing does not touch.
+   */
+  readonly maxClipSpanPlies: number;
 }
 
 export const DEFAULT_DIRECTOR_SETTINGS: DirectorSettings = {
@@ -118,8 +127,46 @@ export const DEFAULT_DIRECTOR_SETTINGS: DirectorSettings = {
   explanationOpportunityBonusMultiplier: 1.4,
   beatBoundaryPauseMs: 400,
   climaxZoom: 1.8,
-  preClimaxRampMs: 1200
+  preClimaxRampMs: 1200,
+  maxClipSpanPlies: 40
 };
+
+// ============================================================
+// Clip window (Phase 18A)
+// ============================================================
+
+/**
+ * Which portion of the game's moves a Cinematic Moment export should
+ * include, derived strictly from StoryPlan's own CentralConflict/
+ * ConsequenceChain/PayoffTerminus evidence — never a new story-selection
+ * mechanism. See clipWindow.ts's deriveClipWindow, the only place this
+ * type is constructed.
+ *
+ * 'abstained' mirrors StoryPlan's own centralConflict === null case exactly
+ * (same NoConflictReason), so a consumer that already branches on
+ * StoryPlan.centralConflict needs no new concept here — it is simply
+ * "no window", and lowerToTimeline.ts falls back to the existing,
+ * unwindowed Full Game behavior for it.
+ */
+export type ClipWindow =
+  | {
+      readonly kind: 'windowed';
+      /** Inclusive. chain.antecedents[0].ply, or criticalPly when there are no antecedents. */
+      readonly startPly: number;
+      /** Ascending. Subset of the chain's own antecedents' plies that survived truncation. */
+      readonly setupPlies: readonly number[];
+      /** The primary turning point's own ply (== ConsequenceChain.triggerPly). */
+      readonly criticalPly: number;
+      /** Ascending. The chain's own consequents' plies, verbatim — never secondaryConflicts. */
+      readonly consequencePlies: readonly number[];
+      /** null only for an 'off-board-result' or 'unresolved' payoff. */
+      readonly payoffPly: number | null;
+      /** Inclusive. The last ply this window includes. */
+      readonly endPly: number;
+      /** True only when maxClipSpanPlies forced startPly later than the chain's own raw antecedents[0].ply. */
+      readonly truncated: boolean;
+    }
+  | { readonly kind: 'abstained'; readonly reason: NoConflictReason | undefined };
 
 // ============================================================
 // Top-level output

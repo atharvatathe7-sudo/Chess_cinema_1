@@ -1,7 +1,8 @@
-import type { GameRecord } from '../pgn/types';
-import type { StoryArchetype } from '../story/types';
+import type { GameRecord, MoveRecord } from '../pgn/types';
+import type { StoryArchetype, StoryPlan } from '../story/types';
 import type { Annotation, AnnotationBeat, CameraKeyframe, CameraPlan, MoveBeat, Scene, Timeline } from '../timeline/types';
 import { squareCenter } from '../render/coords';
+import { deriveClipWindow } from './clipWindow';
 import type { AnnotationDirective, AnnotationDirectiveKind, CameraDirective, CinematicPlan } from './types';
 
 /**
@@ -22,7 +23,7 @@ import type { AnnotationDirective, AnnotationDirectiveKind, CameraDirective, Cin
 const SCENE_ID = 'scene-0';
 
 function buildMoveBeats(
-  game: GameRecord,
+  moves: readonly MoveRecord[],
   plan: CinematicPlan
 ): { beats: MoveBeat[]; plyAtMs: Map<number, number>; plyDurationMs: Map<number, number>; totalMs: number } {
   const treatmentByPly = new Map(plan.moveTreatmentPlan.map((t) => [t.ply, t]));
@@ -33,7 +34,7 @@ function buildMoveBeats(
   const plyDurationMs = new Map<number, number>();
   let cursorMs = 0;
 
-  for (const move of game.moves) {
+  for (const move of moves) {
     const pauseMs = pauseByPly.get(move.ply);
     if (pauseMs) cursorMs += pauseMs;
 
@@ -274,7 +275,7 @@ export function buildCameraPlan(
   return { keyframes };
 }
 
-export function lowerToTimeline(game: GameRecord, plan: CinematicPlan): Timeline {
+export function lowerToTimeline(game: GameRecord, plan: CinematicPlan, story: StoryPlan): Timeline {
   const startPosition = game.positions[0];
   if (!startPosition) {
     throw new Error('lowerToTimeline: GameRecord has no starting position');
@@ -292,16 +293,31 @@ export function lowerToTimeline(game: GameRecord, plan: CinematicPlan): Timeline
     return { scenes: [scene] };
   }
 
-  const { beats: moveBeats, plyAtMs, plyDurationMs, totalMs } = buildMoveBeats(game, plan);
+  // Phase 18A — Cinematic Clip Windowing. A 'windowed' ClipWindow restricts
+  // which of the game's already-played moves this Scene covers, derived
+  // purely from StoryPlan's own evidence (see clipWindow.ts). 'abstained'
+  // (no central conflict) preserves this function's pre-Phase-18A behavior
+  // exactly: every move considered, scene starting at game.positions[0].
+  const clipWindow = deriveClipWindow(story, plan.settings);
+  const consideredMoves = clipWindow.kind === 'windowed' ? game.moves.filter((m) => m.ply >= clipWindow.startPly && m.ply <= clipWindow.endPly) : game.moves;
+  const scenePositionIndex = clipWindow.kind === 'windowed' ? clipWindow.startPly - 1 : 0;
+  const scenePosition = game.positions[scenePositionIndex] ?? startPosition;
+
+  const { beats: moveBeats, plyAtMs, plyDurationMs, totalMs } = buildMoveBeats(consideredMoves, plan);
   const annotationBeats = buildAnnotationBeats(plan.annotationDirectives, plyAtMs, plyDurationMs);
-  // Phase 13B — the terminal ply is always the game's own last move (a
+  // Phase 13B — the terminal ply is the game's own last move (a
   // checkmate/stalemate delivery is definitionally the last move ever
-  // played), so its own atMs is already available from the plyAtMs map
-  // this function just built — no new GameAnalysis dependency, and no new
-  // per-ply field on CinematicPlan, is needed beyond the one
-  // finalPositionIsTerminal boolean. See the Phase 13A design report.
-  const lastMove = game.moves[game.moves.length - 1];
-  const terminalPlyAtMs = plan.finalPositionIsTerminal && lastMove ? (plyAtMs.get(lastMove.ply) ?? null) : null;
+  // played). Phase 18A — once windowed, that move may fall outside this
+  // Scene entirely, so the terminal camera treatment may only fire when the
+  // WINDOW's own last move (never game.moves' raw last index) IS that same
+  // real last move — otherwise a truncated or payoff-short window would
+  // wrongly re-engage the terminal camera on a move that isn't actually the
+  // game's terminal result. See lowerToTimeline.test.ts's dedicated
+  // regression test.
+  const gameLastMove = game.moves[game.moves.length - 1];
+  const windowLastMove = consideredMoves[consideredMoves.length - 1];
+  const windowReachesGameEnd = windowLastMove !== undefined && gameLastMove !== undefined && windowLastMove.ply === gameLastMove.ply;
+  const terminalPlyAtMs = plan.finalPositionIsTerminal && windowReachesGameEnd && windowLastMove ? (plyAtMs.get(windowLastMove.ply) ?? null) : null;
   const cameraPlan = buildCameraPlan(
     plan.cameraDirectives,
     plyAtMs,
@@ -314,8 +330,8 @@ export function lowerToTimeline(game: GameRecord, plan: CinematicPlan): Timeline
 
   const scene: Scene = {
     id: SCENE_ID,
-    startPositionFen: startPosition.fen,
-    startPly: 0,
+    startPositionFen: scenePosition.fen,
+    startPly: scenePositionIndex,
     beats: [...moveBeats, ...annotationBeats],
     cameraPlan,
     durationMs: totalMs

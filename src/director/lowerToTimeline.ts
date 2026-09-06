@@ -256,12 +256,38 @@ interface DirectiveFraming {
  * moveFallbackRegion already uses, before calling the SAME zoomForSquares
  * Phase 18B established.
  */
+/**
+ * Phase 18E-A — every square an ACTIVE tactical annotation needs visible on
+ * this exact ply. Tactical directives are already ply-scoped precisely
+ * (unlike a CameraDirective's own flat, whole-beat square union), so this
+ * is the honest way to recover "the owning CameraDirective's relevant
+ * evidence for THIS ply" without inventing per-ply attribution the
+ * CameraDirective itself doesn't carry: a camera region and its beat's
+ * tactical annotations are already derived from the SAME verified facts
+ * (visualRelevance.ts's criticalRegion/consequenceRegion and
+ * tacticalAnnotations.ts's own derivation both read the same
+ * mechanism/causal-fact/threat evidence), so whichever of that evidence is
+ * actually being drawn as an annotation on this ply is exactly the subset
+ * the camera must not crop. An annotation the tactical channel already
+ * suppressed (priority/redundancy/per-ply cap) is, by definition, not being
+ * shown — nothing on screen needs protecting for it.
+ */
+function activeTacticalSquares(ply: number, tacticalDirectives: readonly TacticalAnnotationDirective[]): readonly string[] {
+  const squares = new Set<string>();
+  for (const t of tacticalDirectives) {
+    if (ply < t.fromPly || ply > t.toPly) continue;
+    for (const sq of t.squares) squares.add(sq);
+  }
+  return [...squares];
+}
+
 function framingFor(
   directive: CameraDirective,
   tracking: TrackingDirective | undefined,
   game: GameRecord | undefined,
   settings: DirectorSettings | undefined,
-  plyAtMs: ReadonlyMap<number, number>
+  plyAtMs: ReadonlyMap<number, number>,
+  tacticalDirectives: readonly TacticalAnnotationDirective[]
 ): DirectiveFraming {
   const fallback = centerOfSquares(directive.squares);
   const staticFraming: DirectiveFraming = { points: [], centerX: fallback.centerX, centerY: fallback.centerY, zoom: directive.zoom };
@@ -300,7 +326,11 @@ function framingFor(
     }
 
     const move = game.moves.find((m) => m.ply === ply)!;
-    const regionSquares = [...new Set([square, move.from, move.to])];
+    // Phase 18E-A — never narrower than whatever tactical geometry is
+    // actually being drawn on this ply: the smallest region that still
+    // safely contains it, widening past the bare subject+move geometry
+    // exactly when (and only when) it must (see activeTacticalSquares).
+    const regionSquares = [...new Set([square, move.from, move.to, ...activeTacticalSquares(ply, tacticalDirectives)])];
     const { centerX, centerY } = centerOfSquares(regionSquares);
     const zoom = zoomForSquares(regionSquares, settings);
     points.push({ atMs, centerX, centerY, zoom });
@@ -344,7 +374,16 @@ export function buildCameraPlan(
    */
   trackingDirectives: readonly TrackingDirective[] = [],
   game?: GameRecord,
-  settings?: DirectorSettings
+  settings?: DirectorSettings,
+  /**
+   * Phase 18E-A — optional, additive. Every pre-existing call site omits
+   * this and gets byte-identical output: framingFor's own
+   * activeTacticalSquares lookup against an empty list never adds anything,
+   * so a tracked ply's region is exactly [subject, move.from, move.to] as
+   * before. Only used to widen (never narrow) a tracked ply's own region —
+   * see framingFor's own doc comment.
+   */
+  tacticalDirectives: readonly TacticalAnnotationDirective[] = []
 ): CameraPlan {
   if (directives.length === 0) {
     return { keyframes: [BASE_CAMERA_KEYFRAME] };
@@ -363,7 +402,7 @@ export function buildCameraPlan(
     const untilDurationMs = plyDurationMs.get(directive.untilPly);
     const naturalHoldEndMs = untilAtMs !== undefined && untilDurationMs !== undefined ? untilAtMs + untilDurationMs : atMs + (plyDurationMs.get(directive.atPly) ?? 0);
 
-    const framing = framingFor(directive, trackingFor(directive, trackingDirectives), game, settings, plyAtMs);
+    const framing = framingFor(directive, trackingFor(directive, trackingDirectives), game, settings, plyAtMs, tacticalDirectives);
     const { centerX, centerY, zoom } = framing;
 
     // Phase 12B — hold at the base full-board framing until shortly before
@@ -489,6 +528,49 @@ export function buildCameraPlan(
   return { keyframes };
 }
 
+/**
+ * Phase 18E-B — the explicit invariant Phase 18A's own move filtering
+ * (consideredMoves, below) already implies but never stated for
+ * DIRECTIVES: no CameraDirective/TacticalAnnotationDirective/
+ * TrackingDirective may meaningfully extend beyond the selected clip
+ * window. Before this, a directive's own atPly/untilPly (or fromPly/toPly)
+ * were computed straight from StoryPlan's beats/consequenceChain — entirely
+ * unaware that clipWindow.ts's own endPly (payoff-anchored) can fall EARLIER
+ * than a beat's own last ply (consequent-anchored); see the Phase 18
+ * integration review's game_07 finding. A directive whose range partially
+ * overlaps the window is truncated to the overlapping portion — its
+ * squares/zoom/subject/evidenceRef are left exactly as derived, since they
+ * describe real, already-verified geometry regardless of which of its
+ * plies end up shown; only the PLY RANGE it may be shown for is clamped. A
+ * directive with no overlap at all is dropped entirely. Enforced here, at
+ * the lowering boundary, rather than left to whatever fallback formula in
+ * buildCameraPlan/buildTacticalBeats happens to absorb an out-of-range ply
+ * — the same principle Phase 18A already applies to moves, now applied to
+ * directives too.
+ */
+function clampCameraDirectivesToWindow(directives: readonly CameraDirective[], startPly: number, endPly: number): readonly CameraDirective[] {
+  const out: CameraDirective[] = [];
+  for (const d of directives) {
+    const atPly = Math.max(d.atPly, startPly);
+    const untilPly = Math.min(d.untilPly, endPly);
+    if (atPly > untilPly) continue;
+    out.push(atPly === d.atPly && untilPly === d.untilPly ? d : { ...d, atPly, untilPly });
+  }
+  return out;
+}
+
+/** Same clamp as clampCameraDirectivesToWindow, for the fromPly/toPly shape TacticalAnnotationDirective and TrackingDirective both share. */
+function clampSpanDirectivesToWindow<T extends { fromPly: number; toPly: number }>(directives: readonly T[], startPly: number, endPly: number): readonly T[] {
+  const out: T[] = [];
+  for (const d of directives) {
+    const fromPly = Math.max(d.fromPly, startPly);
+    const toPly = Math.min(d.toPly, endPly);
+    if (fromPly > toPly) continue;
+    out.push(fromPly === d.fromPly && toPly === d.toPly ? d : { ...d, fromPly, toPly });
+  }
+  return out;
+}
+
 export function lowerToTimeline(game: GameRecord, plan: CinematicPlan, story: StoryPlan): Timeline {
   const startPosition = game.positions[0];
   if (!startPosition) {
@@ -517,9 +599,26 @@ export function lowerToTimeline(game: GameRecord, plan: CinematicPlan, story: St
   const scenePositionIndex = clipWindow.kind === 'windowed' ? clipWindow.startPly - 1 : 0;
   const scenePosition = game.positions[scenePositionIndex] ?? startPosition;
 
+  // Phase 18E-B — camera/tactical/tracking directives clamped to the SAME
+  // window consideredMoves already enforces for moves. A no-op for Full
+  // Game ('abstained': every directive already references real, in-window
+  // plies by construction there) and a no-op for every directive that
+  // already fits — see clampCameraDirectivesToWindow/
+  // clampSpanDirectivesToWindow's own doc comment. The pre-existing
+  // AnnotationDirective channel (Phase 2.4/16) is untouched: its own
+  // buildAnnotationBeats already has a safe-omission check (drops a
+  // directive outright when its ply is out of window) and is out of this
+  // batch's scope.
+  const cameraDirectives =
+    clipWindow.kind === 'windowed' ? clampCameraDirectivesToWindow(plan.cameraDirectives, clipWindow.startPly, clipWindow.endPly) : plan.cameraDirectives;
+  const tacticalDirectives =
+    clipWindow.kind === 'windowed' ? clampSpanDirectivesToWindow(plan.tacticalDirectives, clipWindow.startPly, clipWindow.endPly) : plan.tacticalDirectives;
+  const trackingDirectives =
+    clipWindow.kind === 'windowed' ? clampSpanDirectivesToWindow(plan.trackingDirectives, clipWindow.startPly, clipWindow.endPly) : plan.trackingDirectives;
+
   const { beats: moveBeats, plyAtMs, plyDurationMs, totalMs } = buildMoveBeats(consideredMoves, plan);
   const annotationBeats = buildAnnotationBeats(plan.annotationDirectives, plyAtMs, plyDurationMs);
-  const tacticalBeats = buildTacticalBeats(plan.tacticalDirectives, plyAtMs, plyDurationMs);
+  const tacticalBeats = buildTacticalBeats(tacticalDirectives, plyAtMs, plyDurationMs);
   // Phase 13B — the terminal ply is the game's own last move (a
   // checkmate/stalemate delivery is definitionally the last move ever
   // played). Phase 18A — once windowed, that move may fall outside this
@@ -534,15 +633,16 @@ export function lowerToTimeline(game: GameRecord, plan: CinematicPlan, story: St
   const windowReachesGameEnd = windowLastMove !== undefined && gameLastMove !== undefined && windowLastMove.ply === gameLastMove.ply;
   const terminalPlyAtMs = plan.finalPositionIsTerminal && windowReachesGameEnd && windowLastMove ? (plyAtMs.get(windowLastMove.ply) ?? null) : null;
   const cameraPlan = buildCameraPlan(
-    plan.cameraDirectives,
+    cameraDirectives,
     plyAtMs,
     plyDurationMs,
     totalMs,
     plan.settings.preClimaxRampMs,
     terminalPlyAtMs,
-    plan.trackingDirectives,
+    trackingDirectives,
     game,
-    plan.settings
+    plan.settings,
+    tacticalDirectives
   );
 
   const scene: Scene = {

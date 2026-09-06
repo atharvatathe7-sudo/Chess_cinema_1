@@ -4,11 +4,13 @@ import type { MoveBeat } from '../timeline/types';
 import { resolveCamera } from '../render/resolveCamera';
 import { boundsOfSquares } from '../render/coords';
 import { pieceIdFor } from '../pgn/pieceId';
-import type { CameraDirective, TrackingDirective } from './types';
+import type { CameraDirective, CinematicPlan, TacticalAnnotationDirective, TrackingDirective } from './types';
 import { buildCinematicPlan } from './buildCinematicPlan';
 import { buildCameraPlan, lowerToTimeline, TERMINAL_ZOOM_IN_MS, TERMINAL_ZOOM_OUT_MS } from './lowerToTimeline';
 import { zoomForSquares } from './camera';
-import { gameFromMoves, moveRecord, prunedPlyScenario, quietGameScenario, richMateEndingScenario, windowedMomentScenario, zeroMoveScenario } from './directorFixtures';
+import { gameFromMoves, moveRecord, prunedPlyScenario, quietGameScenario, richMateEndingScenario, storyPlanFrom, windowedMomentScenario, zeroMoveScenario } from './directorFixtures';
+import { centralConflict, consequenceChain } from '../story/storyFixtures';
+import type { StoryPlan } from '../story/types';
 import { DEFAULT_DIRECTOR_SETTINGS } from './types';
 
 /** Mirrors lowerToTimeline.ts's own private centerOfSquares exactly, for computing expected values from production geometry rather than hardcoding them. */
@@ -737,6 +739,328 @@ describe('buildCameraPlan — Phase 18D tracking', () => {
     const establishCenter = expectedCenter(['e2', 'e4']);
     expect(plan.keyframes[1]).toEqual({ atMs: 500, ...establishCenter, zoom: 1.2 });
     expect(plan.keyframes[2]).toEqual({ atMs: 1100, ...establishCenter, zoom: 1.2 });
+  });
+});
+
+/**
+ * Phase 18E-A — the Phase 18 integration review's confirmed game_12 defect:
+ * a tracking-driven camera can crop an active tactical annotation's own
+ * geometry, because a tracked ply's region was built only from
+ * [subject, move.from, move.to], with no awareness of what tactical
+ * annotation was being drawn on that same ply. Fixed by
+ * activeTacticalSquares in lowerToTimeline.ts — every test here hand-builds
+ * the same shape the real game_12 capture showed (a tracked mover whose own
+ * move geometry does not include a defender-loss annotation's second
+ * square) and verifies the region now safely contains it.
+ */
+describe('buildCameraPlan — Phase 18E-A tracking/tactical reconciliation', () => {
+  const SETTINGS = DEFAULT_DIRECTOR_SETTINGS;
+  const RAMP_MS = SETTINGS.preClimaxRampMs;
+
+  function rookScenario() {
+    const rook = pieceIdFor('b', 'r', 'h8');
+    const game = gameFromMoves([moveRecord(1, 'b', 'r', 'h8', 'f8', 'Rxf8', { pieceId: rook })]);
+    const directive: CameraDirective = { atPly: 1, untilPly: 1, role: 'critical', zoom: 1, squares: ['f8', 'a8'], evidenceRef: { kind: 'beat', id: 'b' } };
+    const tracking: TrackingDirective = { fromPly: 1, toPly: 1, subject: { kind: 'piece', pieceId: rook }, role: 'critical', priority: 1, evidenceRef: { kind: 'move', ply: 1 } };
+    const plyAtMs = new Map([[1, 1000]]);
+    const plyDurationMs = new Map([[1, 300]]);
+    return { rook, game, directive, tracking, plyAtMs, plyDurationMs };
+  }
+
+  function defenderLoss(fromPly: number, toPly: number, squares: readonly string[]): TacticalAnnotationDirective {
+    return { fromPly, toPly, kind: 'defender-loss', role: 'critical', squares, priority: 3, evidenceRef: { kind: 'causal-fact', fact: 'defender-lost', ply: fromPly } };
+  }
+
+  it('game_12 reproducer: an active defender-loss arrow whose far endpoint is outside the bare subject+move region is pulled into frame', () => {
+    const { game, directive, tracking, plyAtMs, plyDurationMs } = rookScenario();
+    const tactical = [defenderLoss(1, 1, ['f8', 'a8'])];
+
+    const plan = buildCameraPlan(
+      [directive],
+      plyAtMs,
+      plyDurationMs,
+      2000,
+      RAMP_MS,
+      null,
+      [tracking],
+      game,
+      SETTINGS,
+      tactical
+    );
+
+    const region = ['f8', 'h8', 'a8']; // subject square (f8) + move geometry (h8->f8) + the active annotation's own squares
+    const expected = expectedCenter(region);
+    const expectedZoom = zoomForSquares(region, SETTINGS);
+    expect(plan.keyframes[1]).toEqual({ atMs: 1000, ...expected, zoom: expectedZoom });
+    // a8 is genuinely inside the resulting box — the whole point of the fix.
+    const bounds = boundsOfSquares(region)!;
+    expect(bounds.minX).toBeLessThanOrEqual(0); // a8's file
+    expect(bounds.minY).toBeLessThanOrEqual(0); // a8's rank
+  });
+
+  it('tracking-only case (no active tactical annotation) is completely unchanged from Phase 18D', () => {
+    const { game, directive, tracking, plyAtMs, plyDurationMs } = rookScenario();
+
+    const withoutTactical = buildCameraPlan([directive], plyAtMs, plyDurationMs, 2000, RAMP_MS, null, [tracking], game, SETTINGS);
+    const withEmptyTactical = buildCameraPlan([directive], plyAtMs, plyDurationMs, 2000, RAMP_MS, null, [tracking], game, SETTINGS, []);
+    expect(withEmptyTactical).toEqual(withoutTactical);
+
+    const region = ['f8', 'h8']; // no tactical geometry active — bare subject+move region, exactly as Phase 18D shipped
+    const expected = expectedCenter(region);
+    expect(withoutTactical.keyframes[1]).toEqual({ atMs: 1000, ...expected, zoom: zoomForSquares(region, SETTINGS) });
+  });
+
+  it('tactical-only case (no tracking directive at all) is completely unchanged — the static path never consults tacticalDirectives', () => {
+    const directive: CameraDirective = { atPly: 1, untilPly: 1, role: 'critical', zoom: 1.5, squares: ['f8', 'a8'], evidenceRef: { kind: 'beat', id: 'b' } };
+    const plyAtMs = new Map([[1, 1000]]);
+    const plyDurationMs = new Map([[1, 300]]);
+    const tactical = [defenderLoss(1, 1, ['f8', 'a8'])];
+
+    const withTactical = buildCameraPlan([directive], plyAtMs, plyDurationMs, 2000, RAMP_MS, null, [], undefined, undefined, tactical);
+    const withoutTactical = buildCameraPlan([directive], plyAtMs, plyDurationMs, 2000, RAMP_MS, null);
+    expect(withTactical).toEqual(withoutTactical);
+  });
+
+  it('multiple active tactical annotations on the same tracked ply are all contained', () => {
+    const { game, directive, tracking, plyAtMs, plyDurationMs } = rookScenario();
+    const tactical = [defenderLoss(1, 1, ['f8', 'a8']), { fromPly: 1, toPly: 1, kind: 'check-marker' as const, role: 'critical' as const, squares: ['h1'], priority: 8, evidenceRef: { kind: 'terminal' as const, ply: 1 } }];
+
+    const plan = buildCameraPlan([directive], plyAtMs, plyDurationMs, 2000, RAMP_MS, null, [tracking], game, SETTINGS, tactical);
+
+    const region = ['f8', 'h8', 'a8', 'h1'];
+    expect(plan.keyframes[1]).toEqual({ atMs: 1000, ...expectedCenter(region), zoom: zoomForSquares(region, SETTINGS) });
+  });
+
+  it('widens rather than crops: including tactical geometry never produces a TIGHTER zoom than the bare subject+move region alone', () => {
+    const { game, directive, tracking, plyAtMs, plyDurationMs } = rookScenario();
+    const bare = buildCameraPlan([directive], plyAtMs, plyDurationMs, 2000, RAMP_MS, null, [tracking], game, SETTINGS);
+    const widened = buildCameraPlan([directive], plyAtMs, plyDurationMs, 2000, RAMP_MS, null, [tracking], game, SETTINGS, [defenderLoss(1, 1, ['f8', 'a8'])]);
+
+    expect(widened.keyframes[1]!.zoom).toBeLessThanOrEqual(bare.keyframes[1]!.zoom);
+  });
+
+  it('zoom stays within DirectorSettings bounds even when the active tactical geometry spans the whole board', () => {
+    const { game, directive, tracking, plyAtMs, plyDurationMs } = rookScenario();
+    const tactical = [defenderLoss(1, 1, ['a1', 'h8'])]; // a corner-to-corner pair, forcing the widest possible union
+    const plan = buildCameraPlan([directive], plyAtMs, plyDurationMs, 2000, RAMP_MS, null, [tracking], game, SETTINGS, tactical);
+
+    expect(plan.keyframes[1]!.zoom).toBeGreaterThanOrEqual(1);
+    expect(plan.keyframes[1]!.zoom).toBeLessThanOrEqual(SETTINGS.maxZoom);
+  });
+
+  it('never fabricates geometry: the resulting region is exactly the union of subject square, move geometry, and active tactical squares — nothing else', () => {
+    const { game, directive, tracking, plyAtMs, plyDurationMs } = rookScenario();
+    const tactical = [defenderLoss(1, 1, ['f8', 'a8'])];
+    const plan = buildCameraPlan([directive], plyAtMs, plyDurationMs, 2000, RAMP_MS, null, [tracking], game, SETTINGS, tactical);
+
+    // If any extra, undeclared square had leaked in, the bounding box would
+    // differ from this exact hand-computed union.
+    const exactUnion = ['f8', 'h8', 'a8'];
+    expect(plan.keyframes[1]).toEqual({ atMs: 1000, ...expectedCenter(exactUnion), zoom: zoomForSquares(exactUnion, SETTINGS) });
+  });
+
+  it('a tactical annotation active on a DIFFERENT ply than the one being tracked is not pulled in', () => {
+    const rook = pieceIdFor('b', 'r', 'h8');
+    const game = gameFromMoves([
+      moveRecord(1, 'b', 'r', 'h8', 'f8', 'Rxf8', { pieceId: rook }),
+      moveRecord(2, 'w', 'k', 'e1', 'e2', 'Ke2')
+    ]);
+    const directive: CameraDirective = { atPly: 1, untilPly: 1, role: 'critical', zoom: 1, squares: ['f8'], evidenceRef: { kind: 'beat', id: 'b' } };
+    const tracking: TrackingDirective = { fromPly: 1, toPly: 1, subject: { kind: 'piece', pieceId: rook }, role: 'critical', priority: 1, evidenceRef: { kind: 'move', ply: 1 } };
+    const plyAtMs = new Map([[1, 1000], [2, 1300]]);
+    const plyDurationMs = new Map([[1, 300], [2, 300]]);
+    // This annotation belongs to ply 2 — it must not widen ply 1's own frame.
+    const tactical = [defenderLoss(2, 2, ['a8', 'h1'])];
+
+    const plan = buildCameraPlan([directive], plyAtMs, plyDurationMs, 2000, RAMP_MS, null, [tracking], game, SETTINGS, tactical);
+    const region = ['f8', 'h8'];
+    expect(plan.keyframes[1]).toEqual({ atMs: 1000, ...expectedCenter(region), zoom: zoomForSquares(region, SETTINGS) });
+  });
+});
+
+/**
+ * Phase 18E-B — the Phase 18 integration review's confirmed game_07
+ * inconsistency: a CameraDirective's own atPly/untilPly (derived from
+ * StoryBeat plies, consequent-anchored) can extend past
+ * deriveClipWindow's own endPly (payoff-anchored), silently "rescued" only
+ * by an unrelated fallback formula in buildCameraPlan that was never
+ * designed for this purpose. lowerToTimeline() now explicitly clamps every
+ * camera/tactical/tracking directive to the selected clip window before
+ * lowering — see clampCameraDirectivesToWindow/clampSpanDirectivesToWindow.
+ *
+ * These tests drive the real, exported lowerToTimeline() end to end with a
+ * hand-built StoryPlan (via centralConflict/consequenceChain fixtures) that
+ * reproduces game_07's exact shape — a consequenceChain whose payoff lands
+ * BEFORE its own chain's last consequent ply — scaled to small ply numbers
+ * for clarity, with a hand-built CinematicPlan whose directives extend past
+ * the resulting window on both ends, to exercise every boundary case in one
+ * fixture: before-start clamp, after-end clamp, fully-inside unchanged,
+ * fully-outside dropped, and the exact inclusive boundary.
+ */
+describe('lowerToTimeline — Phase 18E-B clip/directive range reconciliation', () => {
+  function clipMismatchGame(): { game: ReturnType<typeof gameFromMoves>; story: StoryPlan } {
+    const moves = [
+      moveRecord(1, 'w', 'p', 'e2', 'e4', 'e4'),
+      moveRecord(2, 'b', 'p', 'e7', 'e5', 'e5'),
+      moveRecord(3, 'w', 'n', 'g1', 'f3', 'Nf3'),
+      moveRecord(4, 'b', 'n', 'b8', 'c6', 'Nc6'),
+      moveRecord(5, 'w', 'b', 'f1', 'c4', 'Bc4'),
+      moveRecord(6, 'b', 'b', 'f8', 'c5', 'Bc5'),
+      moveRecord(7, 'w', 'q', 'd1', 'h5', 'Qh5'),
+      moveRecord(8, 'b', 'n', 'g8', 'f6', 'Nf6')
+    ];
+    const game = gameFromMoves(moves);
+    // triggerPly=4 (critical), one antecedent at ply 3 (=> startPly=3),
+    // consequents through ply 7, payoff landing at ply 5 (=> endPly=5) —
+    // exactly game_07's own shape: the chain's own consequents (up to 7)
+    // outlive the payoff that actually determines the window's own end.
+    const chain = consequenceChain(4, {
+      antecedents: [{ ply: 3, linkType: 'same-sequence', evidenceId: 'e3' }],
+      consequents: [
+        { ply: 5, linkType: 'multi-move-consequence', evidenceId: 'e5' },
+        { ply: 6, linkType: 'multi-move-consequence', evidenceId: 'e6' },
+        { ply: 7, linkType: 'multi-move-consequence', evidenceId: 'e7' }
+      ],
+      payoff: { kind: 'material-settled', atPly: 5, netMaterialChange: 300 },
+      reachesResult: false
+    });
+    const story = storyPlanFrom({ centralConflict: centralConflict('tp-4', 4, { consequenceChain: chain }) });
+    return { game, story };
+  }
+
+  function plan(overrides: Partial<CinematicPlan>): CinematicPlan {
+    return {
+      schemaVersion: 1,
+      moveTreatmentPlan: [],
+      cameraDirectives: [],
+      annotationDirectives: [],
+      tacticalDirectives: [],
+      trackingDirectives: [],
+      transitionDirectives: [],
+      finalPositionIsTerminal: false,
+      settings: DEFAULT_DIRECTOR_SETTINGS,
+      ...overrides
+    };
+  }
+
+  it("Game 07 exact shape: a CameraDirective starting exactly at the window's own endPly (5) and spanning to ply 8 never references ply 8 at all", () => {
+    const { game, story } = clipMismatchGame();
+    const cameraDirectives: CameraDirective[] = [
+      { atPly: 5, untilPly: 8, role: 'consequence', zoom: 1, squares: ['e7', 'f6'], evidenceRef: { kind: 'beat', id: 'consequence' } }
+    ];
+    const timeline = lowerToTimeline(game, plan({ cameraDirectives }), story);
+    const moveBeatAtMs = new Map(
+      timeline.scenes[0]!.beats.filter((b): b is MoveBeat => b.kind === 'move').map((b) => [b.resultingPly, b.atMs])
+    );
+    // Ply 8 was never part of this Scene at all (windowed out) — its atMs
+    // cannot exist anywhere, so no keyframe can reference it either.
+    expect(moveBeatAtMs.has(8)).toBe(false);
+    for (const k of timeline.scenes[0]!.cameraPlan.keyframes) {
+      expect(k.atMs).toBeLessThanOrEqual(timeline.scenes[0]!.durationMs);
+    }
+    expect(() => assertValidTimeline(timeline)).not.toThrow();
+  });
+
+  it("a CameraDirective spanning the WHOLE window and beyond (atPly 3..8, window ends at 5) holds through ply 5's own real duration — not cut short by an out-of-window untilPly", () => {
+    const { game, story } = clipMismatchGame();
+    // Without the Phase 18E-B clamp, untilPly=8 has no plyAtMs entry, so
+    // buildCameraPlan's own PRE-EXISTING fallback formula
+    // (atMs(atPly) + duration(atPly)) would end the hold right after ply 3
+    // alone — 600ms — silently discarding plies 4 and 5 entirely. Clamped
+    // to atPly:3, untilPly:5, the SAME formula correctly reaches
+    // plyAtMs(5)=1200 + duration(5)=600 = 1800, which Phase 15's own
+    // pre-existing reserve-tail logic then caps at
+    // sceneDurationMs(1800) - TERMINAL_ZOOM_OUT_MS(200) = 1600. That 1600,
+    // not 600, is the proof the fix is actually applied.
+    const cameraDirectives: CameraDirective[] = [
+      { atPly: 3, untilPly: 8, role: 'consequence', zoom: 1.4, squares: ['g1', 'f3'], evidenceRef: { kind: 'beat', id: 'consequence' } }
+    ];
+    const timeline = lowerToTimeline(game, plan({ cameraDirectives }), story);
+    const keyframes = timeline.scenes[0]!.cameraPlan.keyframes;
+
+    expect(timeline.scenes[0]!.durationMs).toBe(1800); // 3 considered moves (plies 3,4,5) x 600ms
+    expect(keyframes).toEqual([
+      { atMs: 0, centerX: 4, centerY: 4, zoom: 1 },
+      { atMs: 0, centerX: 6, centerY: 6.5, zoom: 1.4 }, // g1/f3 bounding-box center, zoom-in at ply 3's own atMs
+      { atMs: 1600, centerX: 6, centerY: 6.5, zoom: 1.4 }, // correct hold-end — reaches ply 5, then Phase 15's reserve-tail caps it here
+      { atMs: 1800, centerX: 4, centerY: 4, zoom: 1 }
+    ]);
+  });
+
+  it('clamps a CameraDirective that starts before the window (before-start clamp): the directive is rescued to cover only its real, in-window portion, not silently dropped', () => {
+    const { game, story } = clipMismatchGame();
+    const cameraDirectives: CameraDirective[] = [
+      { atPly: 1, untilPly: 3, role: 'establish', zoom: 1.25, squares: ['e2', 'e4'], evidenceRef: { kind: 'beat', id: 'setup' } }
+    ];
+    const timeline = lowerToTimeline(game, plan({ cameraDirectives }), story);
+    // Window startPly=3: ply 1's own atMs does not exist in this Scene at
+    // all (only plies 3-5 are considered). Without the clamp,
+    // buildCameraPlan's pre-existing top-level guard
+    // (`plyAtMs.get(directive.atPly) === undefined -> continue`) would find
+    // no entry for atPly=1 and skip this directive ENTIRELY — keyframes[1]
+    // would then be the unconditional final reset ({4,4,1}), not this
+    // establish framing at all. Clamped to atPly:3 (ply 3's own real atMs
+    // is 0, the first considered move), the directive is rescued and its
+    // own zoom (1.25, not 1) genuinely appears.
+    const ply3AtMs = timeline.scenes[0]!.beats.find((b): b is MoveBeat => b.kind === 'move' && b.resultingPly === 3)!.atMs;
+    expect(ply3AtMs).toBe(0);
+    const firstNonBaseKeyframe = timeline.scenes[0]!.cameraPlan.keyframes[1]!;
+    expect(firstNonBaseKeyframe.atMs).toBe(ply3AtMs);
+    expect(firstNonBaseKeyframe.zoom).toBe(1.25);
+  });
+
+  it('a TacticalAnnotationDirective fully outside the window (fromPly > endPly) is dropped entirely — never rendered', () => {
+    const { game, story } = clipMismatchGame();
+    const tacticalDirectives: TacticalAnnotationDirective[] = [
+      { fromPly: 6, toPly: 6, kind: 'check-marker', role: 'consequence', squares: ['e8'], priority: 8, evidenceRef: { kind: 'terminal', ply: 6 } }
+    ];
+    const timeline = lowerToTimeline(game, plan({ tacticalDirectives }), story);
+    const annotationBeats = timeline.scenes[0]!.beats.filter((b) => b.kind === 'annotation');
+    expect(annotationBeats).toHaveLength(0);
+  });
+
+  it('a TacticalAnnotationDirective fully inside the window (fromPly===toPly===endPly) is rendered unchanged', () => {
+    const { game, story } = clipMismatchGame();
+    const tacticalDirectives: TacticalAnnotationDirective[] = [
+      { fromPly: 5, toPly: 5, kind: 'check-marker', role: 'consequence', squares: ['e8'], priority: 8, evidenceRef: { kind: 'terminal', ply: 5 } }
+    ];
+    const timeline = lowerToTimeline(game, plan({ tacticalDirectives }), story);
+    const annotationBeats = timeline.scenes[0]!.beats.filter((b) => b.kind === 'annotation');
+    expect(annotationBeats).toHaveLength(1);
+  });
+
+  it('a TrackingDirective is clamped exactly like its own CameraDirective, preserving the fromPly/toPly===atPly/untilPly invariant', () => {
+    const { game, story } = clipMismatchGame();
+    const attacker = pieceIdFor('w', 'q', 'd1');
+    const cameraDirectives: CameraDirective[] = [
+      { atPly: 5, untilPly: 8, role: 'consequence', zoom: 1, squares: ['h5', 'f7'], evidenceRef: { kind: 'beat', id: 'consequence' } }
+    ];
+    const trackingDirectives: TrackingDirective[] = [
+      { fromPly: 5, toPly: 8, subject: { kind: 'piece', pieceId: attacker }, role: 'consequence', priority: 1, evidenceRef: { kind: 'move', ply: 5 } }
+    ];
+    // Should not throw, and should not silently reintroduce ply 8 — the
+    // real assertion is that lowering completes and produces a valid Scene
+    // whose own last MoveBeat never exceeds the window's own endPly (5).
+    const timeline = lowerToTimeline(game, plan({ cameraDirectives, trackingDirectives }), story);
+    expect(() => assertValidTimeline(timeline)).not.toThrow();
+    const lastResultingPly = Math.max(...timeline.scenes[0]!.beats.filter((b): b is MoveBeat => b.kind === 'move').map((b) => b.resultingPly));
+    expect(lastResultingPly).toBe(5);
+  });
+
+  it('Full Game (no central conflict) is byte-identical — clamping never applies when clipWindow is abstained', () => {
+    const game = gameFromMoves([moveRecord(1, 'w', 'p', 'e2', 'e4', 'e4'), moveRecord(2, 'b', 'p', 'e7', 'e5', 'e5')]);
+    const story = storyPlanFrom({ centralConflict: null, noConflictReason: 'no-turning-points' });
+    const cameraDirectives: CameraDirective[] = [
+      { atPly: 1, untilPly: 2, role: 'critical', zoom: 1.3, squares: ['e4', 'e5'], evidenceRef: { kind: 'beat', id: 'b' } }
+    ];
+    const cinematicPlan = plan({ cameraDirectives });
+    const timeline = lowerToTimeline(game, cinematicPlan, story);
+    // Full Game considers every move — nothing was ever out of window to
+    // clamp, so the directive's own atPly/untilPly survive completely
+    // unchanged into the real keyframes.
+    expect(timeline.scenes[0]!.cameraPlan.keyframes[1]!.zoom).toBe(1.3);
+    const beats = timeline.scenes[0]!.beats.filter((b): b is MoveBeat => b.kind === 'move');
+    expect(beats.map((b) => b.resultingPly)).toEqual([1, 2]);
   });
 });
 

@@ -155,14 +155,23 @@ describe('lowerToTimeline', () => {
     expect(timeline.scenes[0]!.cameraPlan.keyframes).toEqual([{ atMs: 0, centerX: 4, centerY: 4, zoom: 1 }]);
   });
 
-  it('produces a zoom-in/hold/zoom-out camera plan anchored on the climax ply', () => {
+  it('produces a camera plan anchored on the climax ply, using the critical directive\'s own geometry-derived zoom', () => {
     const { game, analysis, understanding, story } = richMateEndingScenario();
     const plan = buildCinematicPlan(game, analysis, understanding, story);
     const timeline = lowerToTimeline(game, plan, story);
     const keyframes = timeline.scenes[0]!.cameraPlan.keyframes;
+    // Phase 18B — zoom is now derived per-directive from real geometry
+    // (director/camera.ts's zoomForSquares), not a fixed climaxZoom
+    // constant; the critical directive's own computed zoom, at its own
+    // atPly's own MoveBeat time, is the ground truth to look for here.
+    const critical = plan.cameraDirectives.find((d) => d.role === 'critical');
+    expect(critical).toBeDefined();
+    const climaxAtMs = timeline.scenes[0]!.beats.find((b) => b.kind === 'move' && b.resultingPly === critical!.atPly)?.atMs;
+    expect(climaxAtMs).toBeDefined();
+
     expect(keyframes.length).toBeGreaterThanOrEqual(4);
     expect(keyframes[0]).toEqual({ atMs: 0, centerX: 4, centerY: 4, zoom: 1 });
-    expect(keyframes.some((k) => k.zoom === DEFAULT_DIRECTOR_SETTINGS.climaxZoom)).toBe(true);
+    expect(keyframes.some((k) => k.atMs === climaxAtMs && k.zoom === critical!.zoom)).toBe(true);
     expect(keyframes[keyframes.length - 1]).toEqual({
       atMs: timeline.scenes[0]!.durationMs,
       centerX: 4,
@@ -176,15 +185,21 @@ describe('lowerToTimeline', () => {
     const plan = buildCinematicPlan(game, analysis, understanding, story);
     const timeline = lowerToTimeline(game, plan, story);
     const keyframes = timeline.scenes[0]!.cameraPlan.keyframes;
-    const climaxKeyframe = keyframes.find((k) => k.zoom === DEFAULT_DIRECTOR_SETTINGS.climaxZoom);
-    expect(climaxKeyframe).toBeDefined();
-    const climaxAtMs = climaxKeyframe!.atMs;
-    const rampStartMs = Math.max(0, climaxAtMs - DEFAULT_DIRECTOR_SETTINGS.preClimaxRampMs);
-    if (rampStartMs > 0) {
+    const critical = plan.cameraDirectives.find((d) => d.role === 'critical');
+    expect(critical).toBeDefined();
+    const climaxAtMs = timeline.scenes[0]!.beats.find((b) => b.kind === 'move' && b.resultingPly === critical!.atPly)?.atMs;
+    expect(climaxAtMs).toBeDefined();
+    // Phase 18B — the ramp's own baseline is whatever keyframe already
+    // precedes the critical directive (the base keyframe when nothing does,
+    // or an earlier 'establish' directive's own hold-end otherwise), not
+    // always 0.
+    const priorKeyframeAtMs = Math.max(0, ...keyframes.filter((k) => k.atMs < climaxAtMs!).map((k) => k.atMs));
+    const rampStartMs = Math.max(priorKeyframeAtMs, climaxAtMs! - DEFAULT_DIRECTOR_SETTINGS.preClimaxRampMs);
+    if (rampStartMs > priorKeyframeAtMs) {
       expect(keyframes.some((k) => k.atMs === rampStartMs && k.zoom === 1 && k.centerX === 4 && k.centerY === 4)).toBe(true);
     } else {
-      // Short-gap case: the base keyframe (atMs=0) already covers this — no separate ramp-start keyframe is needed or inserted.
-      expect(keyframes.filter((k) => k.zoom === 1 && k.atMs > 0 && k.atMs < climaxAtMs)).toHaveLength(0);
+      // Short-gap case: the prior keyframe already covers this — no separate ramp-start keyframe is needed or inserted.
+      expect(keyframes.filter((k) => k.zoom === 1 && k.atMs > priorKeyframeAtMs && k.atMs < climaxAtMs!)).toHaveLength(0);
     }
   });
 });
@@ -197,11 +212,19 @@ describe('lowerToTimeline', () => {
  * independent of any fixture's own particular climax timing.
  */
 describe('buildCameraPlan — Phase 12B pre-climax ramp', () => {
-  const CLIMAX_ZOOM = DEFAULT_DIRECTOR_SETTINGS.climaxZoom;
+  // Phase 18B — zoom is now carried on the directive itself (see
+  // director/camera.ts's zoomForSquares), not read from settings; 1.8 is
+  // kept here only as this suite's own fixed test value, matching the old
+  // climaxZoom exactly so every pre-existing keyframe assertion below stays
+  // numerically valid.
+  const CLIMAX_ZOOM = 1.8;
   const RAMP_MS = DEFAULT_DIRECTOR_SETTINGS.preClimaxRampMs;
 
+  // 'e4'/'e5' share a file, so their bounding-box midpoint (Phase 18B) is
+  // identical to the old average-of-centers value (4.5, 4) — every
+  // hardcoded centerX/centerY below is unaffected by that change.
   function singleDirective(atPly: number): readonly CameraDirective[] {
-    return [{ atPly, focus: 'square-pair', squares: ['e4', 'e5'], evidenceRef: { kind: 'beat', id: 'beat-test' } }];
+    return [{ atPly, untilPly: atPly, role: 'critical', zoom: CLIMAX_ZOOM, squares: ['e4', 'e5'], evidenceRef: { kind: 'beat', id: 'beat-test' } }];
   }
 
   it('DEFAULT_DIRECTOR_SETTINGS.preClimaxRampMs defaults to 1200', () => {
@@ -215,7 +238,7 @@ describe('buildCameraPlan — Phase 12B pre-climax ramp', () => {
     const plyAtMs = new Map([[6, climaxAtMs]]);
     const plyDurationMs = new Map([[6, durationMs]]);
 
-    const plan = buildCameraPlan(singleDirective(6), plyAtMs, plyDurationMs, sceneDurationMs, CLIMAX_ZOOM, RAMP_MS, null);
+    const plan = buildCameraPlan(singleDirective(6), plyAtMs, plyDurationMs, sceneDurationMs, RAMP_MS, null);
 
     expect(plan.keyframes).toHaveLength(4);
     expect(plan.keyframes[0]).toEqual({ atMs: 0, centerX: 4, centerY: 4, zoom: 1 });
@@ -232,7 +255,7 @@ describe('buildCameraPlan — Phase 12B pre-climax ramp', () => {
     const plyAtMs = new Map([[40, climaxAtMs]]);
     const plyDurationMs = new Map([[40, durationMs]]);
 
-    const plan = buildCameraPlan(singleDirective(40), plyAtMs, plyDurationMs, sceneDurationMs, CLIMAX_ZOOM, RAMP_MS, null);
+    const plan = buildCameraPlan(singleDirective(40), plyAtMs, plyDurationMs, sceneDurationMs, RAMP_MS, null);
 
     expect(plan.keyframes).toHaveLength(5);
     expect(plan.keyframes[0]).toEqual({ atMs: 0, centerX: 4, centerY: 4, zoom: 1 });
@@ -255,7 +278,7 @@ describe('buildCameraPlan — Phase 12B pre-climax ramp', () => {
     const climaxAtMs = RAMP_MS; // climaxAtMs - preClimaxRampMs === 0 exactly
     const plyAtMs = new Map([[6, climaxAtMs]]);
     const plyDurationMs = new Map([[6, 300]]);
-    const plan = buildCameraPlan(singleDirective(6), plyAtMs, plyDurationMs, climaxAtMs + 300, CLIMAX_ZOOM, RAMP_MS, null);
+    const plan = buildCameraPlan(singleDirective(6), plyAtMs, plyDurationMs, climaxAtMs + 300, RAMP_MS, null);
     expect(plan.keyframes.filter((k) => k.atMs === 0)).toHaveLength(1);
     expect(plan.keyframes).toHaveLength(4);
   });
@@ -264,7 +287,7 @@ describe('buildCameraPlan — Phase 12B pre-climax ramp', () => {
     const climaxAtMs = 12850;
     const plyAtMs = new Map([[40, climaxAtMs]]);
     const plyDurationMs = new Map([[40, 2100]]);
-    const plan = buildCameraPlan(singleDirective(40), plyAtMs, plyDurationMs, 17050, CLIMAX_ZOOM, RAMP_MS, null);
+    const plan = buildCameraPlan(singleDirective(40), plyAtMs, plyDurationMs, 17050, RAMP_MS, null);
     const rampStartMs = climaxAtMs - RAMP_MS;
 
     for (const t of [0, 1000, rampStartMs / 2, rampStartMs - 1]) {
@@ -276,7 +299,7 @@ describe('buildCameraPlan — Phase 12B pre-climax ramp', () => {
     const climaxAtMs = 12850;
     const plyAtMs = new Map([[40, climaxAtMs]]);
     const plyDurationMs = new Map([[40, 2100]]);
-    const plan = buildCameraPlan(singleDirective(40), plyAtMs, plyDurationMs, 17050, CLIMAX_ZOOM, RAMP_MS, null);
+    const plan = buildCameraPlan(singleDirective(40), plyAtMs, plyDurationMs, 17050, RAMP_MS, null);
     const rampStartMs = climaxAtMs - RAMP_MS;
 
     expect(resolveCamera(plan, rampStartMs).zoom).toBe(1);
@@ -294,11 +317,11 @@ describe('buildCameraPlan — Phase 12B pre-climax ramp', () => {
  * precisely, independent of any fixture's own particular timing.
  */
 describe('buildCameraPlan — Phase 13B terminal payoff', () => {
-  const CLIMAX_ZOOM = DEFAULT_DIRECTOR_SETTINGS.climaxZoom;
+  const CLIMAX_ZOOM = 1.8;
   const RAMP_MS = DEFAULT_DIRECTOR_SETTINGS.preClimaxRampMs;
 
   function singleDirective(atPly: number): readonly CameraDirective[] {
-    return [{ atPly, focus: 'square-pair', squares: ['e4', 'e5'], evidenceRef: { kind: 'beat', id: 'beat-test' } }];
+    return [{ atPly, untilPly: atPly, role: 'critical', zoom: CLIMAX_ZOOM, squares: ['e4', 'e5'], evidenceRef: { kind: 'beat', id: 'beat-test' } }];
   }
 
   function assertAscending(keyframes: readonly { atMs: number }[]): void {
@@ -322,7 +345,7 @@ describe('buildCameraPlan — Phase 13B terminal payoff', () => {
     const plyAtMs = new Map([[6, climaxAtMs]]);
     const plyDurationMs = new Map([[6, durationMs]]);
 
-    const plan = buildCameraPlan(singleDirective(6), plyAtMs, plyDurationMs, sceneDurationMs, CLIMAX_ZOOM, RAMP_MS, terminalPlyAtMs);
+    const plan = buildCameraPlan(singleDirective(6), plyAtMs, plyDurationMs, sceneDurationMs, RAMP_MS, terminalPlyAtMs);
 
     expect(plan.keyframes).toEqual([
       { atMs: 0, centerX: 4, centerY: 4, zoom: 1 },
@@ -341,7 +364,7 @@ describe('buildCameraPlan — Phase 13B terminal payoff', () => {
     const plyAtMs = new Map([[40, climaxAtMs]]);
     const plyDurationMs = new Map([[40, durationMs]]);
 
-    const plan = buildCameraPlan(singleDirective(40), plyAtMs, plyDurationMs, sceneDurationMs, CLIMAX_ZOOM, RAMP_MS, terminalPlyAtMs);
+    const plan = buildCameraPlan(singleDirective(40), plyAtMs, plyDurationMs, sceneDurationMs, RAMP_MS, terminalPlyAtMs);
 
     const center = { centerX: 4.5, centerY: 4 }; // squareCenter('e4')/squareCenter('e5') averaged — see singleDirective
     expect(plan.keyframes).toEqual([
@@ -365,7 +388,7 @@ describe('buildCameraPlan — Phase 13B terminal payoff', () => {
     const plyAtMs = new Map([[12, climaxAtMs]]);
     const plyDurationMs = new Map([[12, durationMs]]);
 
-    const plan = buildCameraPlan(singleDirective(12), plyAtMs, plyDurationMs, sceneDurationMs, CLIMAX_ZOOM, RAMP_MS, terminalPlyAtMs);
+    const plan = buildCameraPlan(singleDirective(12), plyAtMs, plyDurationMs, sceneDurationMs, RAMP_MS, terminalPlyAtMs);
 
     const center = { centerX: 4.5, centerY: 4 }; // squareCenter('e4')/squareCenter('e5') averaged — see singleDirective
     expect(plan.keyframes).toEqual([
@@ -388,7 +411,7 @@ describe('buildCameraPlan — Phase 13B terminal payoff', () => {
     const plyAtMs = new Map([[8, climaxAtMs]]);
     const plyDurationMs = new Map([[8, durationMs]]);
 
-    const plan = buildCameraPlan(singleDirective(8), plyAtMs, plyDurationMs, sceneDurationMs, CLIMAX_ZOOM, RAMP_MS, null);
+    const plan = buildCameraPlan(singleDirective(8), plyAtMs, plyDurationMs, sceneDurationMs, RAMP_MS, null);
 
     expect(plan.keyframes).toEqual([
       { atMs: 0, centerX: 4, centerY: 4, zoom: 1 },
@@ -402,7 +425,7 @@ describe('buildCameraPlan — Phase 13B terminal payoff', () => {
   it('Quiet-shaped case (no camera directive at all): remains the single static full-board keyframe regardless of terminalPlyAtMs', () => {
     const plyAtMs = new Map<number, number>();
     const plyDurationMs = new Map<number, number>();
-    const plan = buildCameraPlan([], plyAtMs, plyDurationMs, 2550, CLIMAX_ZOOM, RAMP_MS, 2250);
+    const plan = buildCameraPlan([], plyAtMs, plyDurationMs, 2550, RAMP_MS, 2250);
     expect(plan.keyframes).toEqual([{ atMs: 0, centerX: 4, centerY: 4, zoom: 1 }]);
   });
 
@@ -415,7 +438,7 @@ describe('buildCameraPlan — Phase 13B terminal payoff', () => {
     for (const c of cases) {
       const plyAtMs = new Map([[c.ply, c.climaxAtMs]]);
       const plyDurationMs = new Map([[c.ply, c.durationMs]]);
-      const plan = buildCameraPlan(singleDirective(c.ply), plyAtMs, plyDurationMs, c.sceneDurationMs, CLIMAX_ZOOM, RAMP_MS, c.terminalPlyAtMs);
+      const plan = buildCameraPlan(singleDirective(c.ply), plyAtMs, plyDurationMs, c.sceneDurationMs, RAMP_MS, c.terminalPlyAtMs);
       const cam = resolveCamera(plan, c.sceneDurationMs - 1);
       expect(Math.abs(cam.zoom - 1), `sceneDurationMs=${c.sceneDurationMs}: zoom`).toBeLessThan(1e-6);
       expect(Math.abs(cam.centerX - 4), `sceneDurationMs=${c.sceneDurationMs}: centerX`).toBeLessThan(1e-6);
@@ -432,7 +455,7 @@ describe('buildCameraPlan — Phase 13B terminal payoff', () => {
     for (const c of cases) {
       const plyAtMs = new Map([[c.ply, c.climaxAtMs]]);
       const plyDurationMs = new Map([[c.ply, c.durationMs]]);
-      const plan = buildCameraPlan(singleDirective(c.ply), plyAtMs, plyDurationMs, c.sceneDurationMs, CLIMAX_ZOOM, RAMP_MS, c.terminalPlyAtMs);
+      const plan = buildCameraPlan(singleDirective(c.ply), plyAtMs, plyDurationMs, c.sceneDurationMs, RAMP_MS, c.terminalPlyAtMs);
       // Right at the terminal ply's own start, the camera must already be at full climaxZoom.
       expect(resolveCamera(plan, c.terminalPlyAtMs).zoom).toBe(CLIMAX_ZOOM);
       // And it must still be meaningfully zoomed 50ms into the terminal move.
@@ -448,7 +471,7 @@ describe('buildCameraPlan — Phase 13B terminal payoff', () => {
     const plyAtMs = new Map([[6, climaxAtMs]]);
     const plyDurationMs = new Map([[6, durationMs]]);
 
-    const plan = buildCameraPlan(singleDirective(6), plyAtMs, plyDurationMs, sceneDurationMs, CLIMAX_ZOOM, RAMP_MS, terminalPlyAtMs);
+    const plan = buildCameraPlan(singleDirective(6), plyAtMs, plyDurationMs, sceneDurationMs, RAMP_MS, terminalPlyAtMs);
 
     assertAscending(plan.keyframes);
     // No keyframe pair shares an atMs.
@@ -470,7 +493,7 @@ describe('buildCameraPlan — Phase 13B terminal payoff', () => {
     const plyAtMs = new Map([[6, climaxAtMs]]);
     const plyDurationMs = new Map([[6, durationMs]]);
 
-    const plan = buildCameraPlan(singleDirective(6), plyAtMs, plyDurationMs, sceneDurationMs, CLIMAX_ZOOM, RAMP_MS, terminalPlyAtMs);
+    const plan = buildCameraPlan(singleDirective(6), plyAtMs, plyDurationMs, sceneDurationMs, RAMP_MS, terminalPlyAtMs);
 
     assertAscending(plan.keyframes);
     expect(plan.keyframes[plan.keyframes.length - 1]).toEqual({ atMs: sceneDurationMs, centerX: 4, centerY: 4, zoom: 1 });
@@ -513,13 +536,15 @@ describe('lowerToTimeline — Phase 18A clip windowing', () => {
     // The window's own last move is ply 7, never ply 10.
     expect(Math.max(...beats.map((b) => b.resultingPly))).toBe(7);
 
-    // No keyframe in the resulting CameraPlan reaches climaxZoom a second
-    // time near the end of the scene the way Phase 13B's terminal
-    // re-engagement would — the only climaxZoom keyframes present are the
-    // ones the climax beat itself (ply 5) already produces.
+    // No keyframe in the resulting CameraPlan reaches the critical
+    // directive's own zoom a second time near the end of the scene the way
+    // Phase 13B's terminal re-engagement would — the only such keyframes
+    // present are the ones the climax beat itself (ply 5) already produces.
+    const critical = plan.cameraDirectives.find((d) => d.role === 'critical');
+    expect(critical).toBeDefined();
     const keyframes = timeline.scenes[0]!.cameraPlan.keyframes;
-    const climaxZoomKeyframes = keyframes.filter((k) => k.zoom === DEFAULT_DIRECTOR_SETTINGS.climaxZoom);
-    for (const k of climaxZoomKeyframes) {
+    const criticalZoomKeyframes = keyframes.filter((k) => k.zoom === critical!.zoom && k.zoom > 1);
+    for (const k of criticalZoomKeyframes) {
       expect(k.atMs).toBeLessThan(timeline.scenes[0]!.durationMs);
     }
     // The scene always resets to full-board framing at its own true end.

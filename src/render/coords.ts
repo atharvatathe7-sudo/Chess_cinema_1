@@ -32,6 +32,38 @@ export function isDarkSquare(fileIndex: number, rank: number): boolean {
   return (fileIndex + rank) % 2 === 1;
 }
 
+export interface BoardBounds {
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+}
+
+/**
+ * Phase 18B — the tight board-space bounding box covering every given
+ * square, unflipped (White's-perspective) coordinates, same convention
+ * squareCenter/squareToTopLeft already use. A single shared definition so a
+ * region's zoom (director/camera.ts) and its on-screen center
+ * (director/lowerToTimeline.ts) are always derived from the exact same box
+ * — the two must never disagree, or a viewport sized for one could crop the
+ * other. Returns null for an empty list.
+ */
+export function boundsOfSquares(squares: readonly string[]): BoardBounds | null {
+  if (squares.length === 0) return null;
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const square of squares) {
+    const { x, y } = squareToTopLeft(square, false);
+    minX = Math.min(minX, x);
+    maxX = Math.max(maxX, x + 1);
+    minY = Math.min(minY, y);
+    maxY = Math.max(maxY, y + 1);
+  }
+  return { minX, maxX, minY, maxY };
+}
+
 export function lerpPoint(a: BoardPoint, b: BoardPoint, t: number): BoardPoint {
   return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
 }

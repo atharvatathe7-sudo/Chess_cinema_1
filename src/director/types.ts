@@ -1,4 +1,4 @@
-import type { NoConflictReason, StoryArchetype } from '../story/types';
+import type { BeatRole, NoConflictReason, StoryArchetype } from '../story/types';
 
 /**
  * Phase 2.4 — Cinematic Director data model.
@@ -43,12 +43,31 @@ export interface TransitionDirective {
 // Camera
 // ============================================================
 
-export type CameraFocusKind = 'full-board' | 'square-pair';
+/**
+ * Phase 18B — which conceptual camera event a directive realizes. Mirrors
+ * BeatRole's own grouping (see visualRelevance.ts's cameraRoleFor):
+ * 'setup'/'building-sequence' both become 'establish', 'climax' becomes
+ * 'critical', 'consequence' stays 'consequence', 'resolution' becomes
+ * 'payoff'. lowerToTimeline.ts uses this — not array position — to decide
+ * which directive gets the pre-climax ramp ('critical') and which gets
+ * terminal payoff re-engagement (the last directive).
+ */
+export type CameraRole = 'establish' | 'critical' | 'consequence' | 'payoff';
 
 export interface CameraDirective {
+  /** First ply this directive's framing covers. */
   readonly atPly: number;
-  readonly focus: CameraFocusKind;
-  /** Square names (e.g. "e4"); resolved to board-space coordinates only at lowering time. */
+  /** Inclusive. Last ply this directive's framing holds through — equal to atPly for a single-ply directive. */
+  readonly untilPly: number;
+  readonly role: CameraRole;
+  /**
+   * Phase 18B — derived from the region's own bounding box (see
+   * director/camera.ts's zoomForSquares), never a fixed constant. > 1 means
+   * tighter than full-board; exactly 1 means full-board framing was already
+   * the truthful choice for this region.
+   */
+  readonly zoom: number;
+  /** Every square this directive's region considers relevant (primary + secondary, deduped); resolved to board-space coordinates only at lowering time. */
   readonly squares: readonly string[];
   readonly evidenceRef: { readonly kind: 'beat'; readonly id: string };
 }
@@ -91,21 +110,32 @@ export interface DirectorSettings {
   readonly theoryMultiplier: number;
   readonly explanationOpportunityBonusMultiplier: number;
   readonly beatBoundaryPauseMs: number;
-  /** > 1. Applied uniformly at the one v1 camera move (the climax zoom). */
-  readonly climaxZoom: number;
   /**
-   * Phase 12B — how long, immediately before the climax ply, the camera's
-   * eased zoom-in ramp is allowed to run. Camera zoom used to start easing
-   * toward climaxZoom from t=0 across the entire pre-climax portion of the
-   * video, so easeOutCubic's own front-loaded shape (render/resolveCamera.ts,
-   * unchanged) meant the camera was already sitting near-fully zoomed in —
-   * and visually static — for a long stretch before the climax actually
-   * happened (see the Phase 12 investigation's own zoom-curve quantification:
-   * >99% zoomed by 78.5% of the way through the gap, regardless of gap
-   * length). Compressing the ramp into a short, fixed window right before
-   * the climax makes the zoom read as an arrival at the climax rather than
-   * a long prior hold, without touching the easing function or any other
-   * segment of the camera plan.
+   * Phase 18B — replaces the old fixed climaxZoom. Extra board-units of
+   * padding kept visible on EACH side of a VisualRegion's own tight
+   * bounding box, so the camera never crops the box itself to fill the
+   * frame — see director/camera.ts's zoomForSquares. Chosen from the same
+   * 0..8 board-unit coordinate system render/coords.ts already uses (one
+   * square = 1 unit) and validated visually against the real corpus.
+   */
+  readonly minVisibleContextSquares: number;
+  /** Phase 18B — the tightest zoom zoomForSquares may ever produce, regardless of how small a region is. Board-relative, same >1-means-tighter convention as the old climaxZoom. */
+  readonly maxZoom: number;
+  /**
+   * Phase 12B — how long, immediately before the climax/critical beat, the
+   * camera's eased zoom-in ramp is allowed to run. Camera zoom used to
+   * start easing toward the climax framing from t=0 across the entire
+   * pre-climax portion of the video, so easeOutCubic's own front-loaded
+   * shape (render/resolveCamera.ts, unchanged) meant the camera was already
+   * sitting near-fully zoomed in — and visually static — for a long
+   * stretch before the climax actually happened (see the Phase 12
+   * investigation's own zoom-curve quantification: >99% zoomed by 78.5% of
+   * the way through the gap, regardless of gap length). Compressing the
+   * ramp into a short, fixed window right before the climax makes the zoom
+   * read as an arrival at the climax rather than a long prior hold, without
+   * touching the easing function or any other segment of the camera plan.
+   * Phase 18B applies this only to the 'critical' CameraDirective — see
+   * lowerToTimeline.ts's buildCameraPlan.
    */
   readonly preClimaxRampMs: number;
   /**
@@ -126,7 +156,8 @@ export const DEFAULT_DIRECTOR_SETTINGS: DirectorSettings = {
   theoryMultiplier: 0.25,
   explanationOpportunityBonusMultiplier: 1.4,
   beatBoundaryPauseMs: 400,
-  climaxZoom: 1.8,
+  minVisibleContextSquares: 1.5,
+  maxZoom: 2.2,
   preClimaxRampMs: 1200,
   maxClipSpanPlies: 40
 };
@@ -189,10 +220,11 @@ export interface CinematicPlan {
    * (analysis.plies[last].evaluationAfter.kind === 'terminal'), restated
    * here rather than re-derived, since buildCinematicPlan.ts already
    * receives GameAnalysis and already computes this exact fact for
-   * annotationDirectives. Consumed only by lowerToTimeline.ts's
-   * buildCameraPlan, to re-engage the camera on the actual terminal move
-   * without threading GameAnalysis into director/camera.ts at all — see
-   * the Phase 13A design report.
+   * annotationDirectives. Consumed by lowerToTimeline.ts's buildCameraPlan
+   * to re-engage the camera on the actual terminal move — see the Phase 13A
+   * design report (Phase 18B additionally threads GameAnalysis into
+   * director/camera.ts itself, for verified-geometry lookups; this field's
+   * own role here is unchanged).
    */
   readonly finalPositionIsTerminal: boolean;
   readonly settings: DirectorSettings;
@@ -205,7 +237,7 @@ export interface CinematicPlan {
  *
  * Every field in this file is either a reference into StoryPlan/
  * GameUnderstanding/GameAnalysis (never a copy of the fact itself), a
- * closed enum-like label (PacingClass, CameraFocusKind,
+ * closed enum-like label (PacingClass, CameraRole,
  * AnnotationDirectiveKind), or plain structural data (ply numbers, square
  * names, milliseconds). No field anywhere holds a sentence, a title, a
  * hook, a caption, a psychological claim, or unsupported intent. That

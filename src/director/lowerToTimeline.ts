@@ -1,7 +1,7 @@
 import type { GameRecord, MoveRecord } from '../pgn/types';
 import type { StoryArchetype, StoryPlan } from '../story/types';
 import type { Annotation, AnnotationBeat, CameraKeyframe, CameraPlan, MoveBeat, Scene, Timeline } from '../timeline/types';
-import { squareCenter } from '../render/coords';
+import { boundsOfSquares } from '../render/coords';
 import { deriveClipWindow } from './clipWindow';
 import type { AnnotationDirective, AnnotationDirectiveKind, CameraDirective, CinematicPlan } from './types';
 
@@ -129,32 +129,42 @@ const BASE_CAMERA_KEYFRAME: CameraKeyframe = { atMs: 0, centerX: 4, centerY: 4, 
  * before sceneDurationMs so the camera is always back to (approximately)
  * the base full-board framing by the time export/runExport.ts's Phase 12A
  * terminal-hold freeze query (sceneDurationMs - 1) samples it — see the
- * Phase 13A design report's derivation: for climaxZoom = 1.8, ~93ms is the
- * analytical floor for that freeze query to already land within 1e-6 of
- * zoom = 1; 200ms keeps a comfortable margin.
+ * Phase 13A design report's derivation: ~93ms was the analytical floor for
+ * that freeze query to already land within 1e-6 of zoom = 1 at the old
+ * fixed climaxZoom = 1.8; 200ms keeps a comfortable margin, and Phase 18B's
+ * dynamic zoom never exceeds DirectorSettings.maxZoom, which stays in the
+ * same range.
  *
  * TERMINAL_ZOOM_IN_MS is the short window immediately before the terminal
- * ply in which the camera re-approaches climaxZoom, mirroring
- * preClimaxRampMs's own "short, fixed window" shape at a smaller scale
- * appropriate to a single move rather than an entire pre-climax buildup.
+ * ply in which the camera re-approaches the payoff directive's own zoom,
+ * mirroring preClimaxRampMs's own "short, fixed window" shape at a smaller
+ * scale appropriate to a single move rather than an entire pre-climax
+ * buildup.
  */
 export const TERMINAL_ZOOM_OUT_MS = 200;
 export const TERMINAL_ZOOM_IN_MS = 400;
+
+/** Board-space center of a directive's own relevant squares — the same bounding box director/camera.ts's zoomForSquares already sized the zoom for, so center and zoom can never disagree (see render/coords.ts's boundsOfSquares doc comment). */
+function centerOfSquares(squares: readonly string[]): { centerX: number; centerY: number } {
+  const bounds = boundsOfSquares(squares);
+  if (!bounds) return { centerX: 4, centerY: 4 };
+  return { centerX: (bounds.minX + bounds.maxX) / 2, centerY: (bounds.minY + bounds.maxY) / 2 };
+}
 
 export function buildCameraPlan(
   directives: readonly CameraDirective[],
   plyAtMs: ReadonlyMap<number, number>,
   plyDurationMs: ReadonlyMap<number, number>,
   sceneDurationMs: number,
-  climaxZoom: number,
   preClimaxRampMs: number,
   /**
    * Phase 13B — the actual logical time the game's own terminal ply (the
    * literal checkmate/stalemate-delivering move) begins, or null when the
    * game does not end in a genuine terminal result. Resolved by
-   * lowerToTimeline() from the game's own last move — never threaded
-   * through director/camera.ts, which stays anchored only on the climax
-   * StoryBeat, unchanged, per the Phase 13A design report.
+   * lowerToTimeline() from the game's own last move. Phase 18B applies the
+   * terminal re-engagement below only to the LAST CameraDirective (whatever
+   * its role — establish/critical/consequence/payoff), since that is the
+   * only directive whose hold can run into the scene's own end.
    */
   terminalPlyAtMs: number | null
 ): CameraPlan {
@@ -163,111 +173,127 @@ export function buildCameraPlan(
   }
 
   const keyframes: CameraKeyframe[] = [BASE_CAMERA_KEYFRAME];
-  for (const directive of directives) {
+  let lastKeyframeAtMs = 0;
+
+  for (let i = 0; i < directives.length; i++) {
+    const directive = directives[i]!;
+    const isLast = i === directives.length - 1;
+
     const atMs = plyAtMs.get(directive.atPly);
     if (atMs === undefined) continue;
-    const durationMs = plyDurationMs.get(directive.atPly) ?? 0;
+    const untilAtMs = plyAtMs.get(directive.untilPly);
+    const untilDurationMs = plyDurationMs.get(directive.untilPly);
+    const naturalHoldEndMs = untilAtMs !== undefined && untilDurationMs !== undefined ? untilAtMs + untilDurationMs : atMs + (plyDurationMs.get(directive.atPly) ?? 0);
 
-    const centers = directive.squares.map((sq) => squareCenter(sq, false));
-    const centerX = centers.reduce((sum, c) => sum + c.x, 0) / centers.length;
-    const centerY = centers.reduce((sum, c) => sum + c.y, 0) / centers.length;
+    const { centerX, centerY } = centerOfSquares(directive.squares);
+    const zoom = directive.zoom;
 
     // Phase 12B — hold at the base full-board framing until shortly before
-    // the climax, so easeOutCubic's own eased ramp (render/resolveCamera.ts,
-    // unchanged) is compressed into a short, fixed window immediately
-    // preceding the climax rather than spread across the entire pre-climax
-    // portion of the video. Omitted entirely (rampStartMs <= 0) whenever the
-    // climax happens sooner than preClimaxRampMs into the video — the ramp
-    // then simply uses however much time is already available between the
-    // base keyframe and the climax keyframe, identical to pre-Phase-12B
-    // behavior for every such game (e.g. Scholar's Mate).
-    const rampStartMs = Math.max(0, atMs - preClimaxRampMs);
-    if (rampStartMs > 0) {
-      keyframes.push({ atMs: rampStartMs, centerX: 4, centerY: 4, zoom: 1 });
+    // the 'critical' directive, so easeOutCubic's own eased ramp
+    // (render/resolveCamera.ts, unchanged) is compressed into a short,
+    // fixed window immediately preceding it rather than spread across
+    // everything since the last keyframe. Omitted entirely
+    // (rampStartMs <= lastKeyframeAtMs) whenever the critical beat happens
+    // too soon after the last keyframe for a full ramp window — the
+    // interpolation then simply uses however much time is already
+    // available, identical to pre-Phase-12B behavior for every such game
+    // (e.g. Scholar's Mate). Phase 18B — gated to role 'critical' only:
+    // an establish/consequence/payoff reframe already reads as a deliberate
+    // transition via the plain interpolation from the previous directive's
+    // own hold-end, and does not need this extra full-board dip.
+    if (directive.role === 'critical') {
+      const rampStartMs = Math.max(lastKeyframeAtMs, atMs - preClimaxRampMs);
+      if (rampStartMs > lastKeyframeAtMs) {
+        keyframes.push({ atMs: rampStartMs, centerX: 4, centerY: 4, zoom: 1 });
+      }
     }
 
-    // Zoom in, then hold at the same values through this ply's own dwell
-    // time — two identical-value keyframes at different atMs create a
+    // Zoom in, then hold at the same values through this directive's own
+    // dwell time — two identical-value keyframes at different atMs create a
     // genuine hold under resolveCamera.ts's own interpolation (unchanged).
-    keyframes.push({ atMs, centerX, centerY, zoom: climaxZoom });
-    const naturalHoldEndMs = atMs + durationMs;
+    keyframes.push({ atMs, centerX, centerY, zoom });
 
-    // Phase 13B — the story-layer climax is deliberately anchored on the
-    // turning point that makes the outcome inevitable (e.g. the blunder
-    // before a forced mate), not the later move that mechanically delivers
-    // it (see the Phase 13 investigation and story.spec.ts's own
-    // documented reasoning) — that selection is intentionally left
-    // unchanged. What follows only adjusts how long the camera stays
-    // engaged, so the actual terminal move itself also reads as visually
-    // decisive rather than playing out after the camera has already
-    // reset.
+    if (!isLast) {
+      keyframes.push({ atMs: naturalHoldEndMs, centerX, centerY, zoom });
+      lastKeyframeAtMs = naturalHoldEndMs;
+      continue;
+    }
+
+    // Phase 13B — the story-layer climax/payoff is deliberately anchored on
+    // the turning point that makes the outcome inevitable (e.g. the blunder
+    // before a forced mate), not necessarily the later move that
+    // mechanically delivers it (see the Phase 13 investigation and
+    // story.spec.ts's own documented reasoning) — that selection is
+    // intentionally left unchanged. What follows only adjusts how long the
+    // camera stays engaged on the LAST directive, so the actual terminal
+    // move itself also reads as visually decisive rather than playing out
+    // after the camera has already reset.
     if (terminalPlyAtMs !== null && terminalPlyAtMs > naturalHoldEndMs) {
       // Gap case (Evergreen/Stalemate-shaped): the terminal move happens
-      // well after the climax hold's own natural end, with genuinely
+      // well after this directive's own hold naturally ends, with genuinely
       // distinct consequence moves in between (e.g. Evergreen's Qxd7+,
       // Kxd7, Bf5+, Ke8, Bd7+, Kf8) that should stay at full-board framing
       // rather than sit inside an unnaturally long zoomed hold. The
-      // existing climax hold-end is left exactly as it was; a short,
-      // separate re-engagement episode is appended, timed on the terminal
-      // ply itself: reset to full board, re-approach climaxZoom in the
-      // final TERMINAL_ZOOM_IN_MS before the terminal move begins, hold
-      // through most of it, then leave TERMINAL_ZOOM_OUT_MS of reset room
-      // before sceneDurationMs. Every new keyframe here is guarded with
-      // Math.max/a strict-inequality skip so a small or zero gap between
-      // the climax hold and the terminal move (not seen in any canonical
-      // game today, but not assumed impossible for a future one) never
-      // produces a duplicate or out-of-order timestamp — see the Phase 13A
-      // design report's own Scholar's Mate keyframe-safety analysis.
-      keyframes.push({ atMs: naturalHoldEndMs, centerX, centerY, zoom: climaxZoom });
+      // existing hold-end is left exactly as it was; a short, separate
+      // re-engagement episode is appended, timed on the terminal ply
+      // itself: reset to full board, re-approach this directive's own zoom
+      // in the final TERMINAL_ZOOM_IN_MS before the terminal move begins,
+      // hold through most of it, then leave TERMINAL_ZOOM_OUT_MS of reset
+      // room before sceneDurationMs. Every new keyframe here is guarded
+      // with Math.max/a strict-inequality skip so a small or zero gap
+      // between the hold-end and the terminal move never produces a
+      // duplicate or out-of-order timestamp — see the Phase 13A design
+      // report's own Scholar's Mate keyframe-safety analysis.
+      keyframes.push({ atMs: naturalHoldEndMs, centerX, centerY, zoom });
 
       const reengageStartMs = terminalPlyAtMs - TERMINAL_ZOOM_IN_MS;
       if (reengageStartMs > naturalHoldEndMs) {
         keyframes.push({ atMs: reengageStartMs, centerX, centerY, zoom: 1 });
       }
 
-      keyframes.push({ atMs: terminalPlyAtMs, centerX, centerY, zoom: climaxZoom });
+      keyframes.push({ atMs: terminalPlyAtMs, centerX, centerY, zoom });
 
       const proposedHoldEndMs = sceneDurationMs - TERMINAL_ZOOM_OUT_MS;
       const holdEndMs = proposedHoldEndMs > terminalPlyAtMs ? proposedHoldEndMs : terminalPlyAtMs;
       if (holdEndMs > terminalPlyAtMs) {
-        keyframes.push({ atMs: holdEndMs, centerX, centerY, zoom: climaxZoom });
+        keyframes.push({ atMs: holdEndMs, centerX, centerY, zoom });
       }
     } else if (terminalPlyAtMs !== null) {
       // Zero/negative-gap case (Scholar's-Mate-shaped): the terminal move
-      // already begins at or before the climax hold's own natural end, so
-      // there is no separate episode to insert — simply extend the SAME
-      // hold-end keyframe far enough to leave TERMINAL_ZOOM_OUT_MS of
-      // reset room before sceneDurationMs. Guarded to fall back to the
-      // unextended natural hold-end whenever extending would reach or
-      // exceed sceneDurationMs itself (the degenerate case where the
-      // climax ply IS the game's own terminal ply, already a pre-existing,
-      // untouched edge case in buildCameraPlan's final unconditional reset
-      // push — this guard only avoids making that pre-existing case worse,
-      // it does not newly fix it).
-      const proposedHoldEndMs = naturalHoldEndMs > sceneDurationMs - TERMINAL_ZOOM_OUT_MS ? naturalHoldEndMs : sceneDurationMs - TERMINAL_ZOOM_OUT_MS;
-      const holdEndMs = proposedHoldEndMs < sceneDurationMs ? proposedHoldEndMs : naturalHoldEndMs;
-      keyframes.push({ atMs: holdEndMs, centerX, centerY, zoom: climaxZoom });
+      // already begins at or before this directive's own hold naturally
+      // ends, so there is no separate episode to insert — simply extend the
+      // SAME hold-end keyframe far enough to leave TERMINAL_ZOOM_OUT_MS of
+      // reset room before sceneDurationMs (that's the "propose the later of
+      // the two" step below). Guarded to fall back to a CLAMPED-DOWN
+      // latestHoldEndMs — never the unextended natural hold-end verbatim —
+      // whenever the proposal would land AT OR PAST sceneDurationMs itself:
+      // e.g. when this directive's own ply IS the game's last ply, where
+      // naturalHoldEndMs can equal sceneDurationMs exactly. Falling back to
+      // naturalHoldEndMs there would push a keyframe AT sceneDurationMs,
+      // sharing that timestamp with the final unconditional reset
+      // immediately below — two same-timestamp keyframes with different
+      // centers make resolveCamera's own interval search pick whichever
+      // sorts first, breaking Phase 12A's freeze-anchor query.
+      const latestHoldEndMs = sceneDurationMs - TERMINAL_ZOOM_OUT_MS;
+      const proposedHoldEndMs = Math.max(naturalHoldEndMs, latestHoldEndMs);
+      const holdEndMs = proposedHoldEndMs < sceneDurationMs ? proposedHoldEndMs : latestHoldEndMs > atMs ? latestHoldEndMs : naturalHoldEndMs;
+      keyframes.push({ atMs: holdEndMs, centerX, centerY, zoom });
     } else {
       // Phase 15 — reserve the same reset tail the terminal branches above
       // already reserve.
       //
-      // When the selected climax ply is ALSO the game's last ply, its own
-      // dwell time runs all the way to sceneDurationMs, so the hold-end
-      // keyframe and the final unconditional reset land on the same
-      // timestamp and the camera never actually returns to full board: the
-      // Phase 12A freeze query at sceneDurationMs - 1 reads the full climax
-      // zoom, and the exported video ends frozen mid-zoom. That degenerate
-      // case is called out in the zero-gap branch's own comment above as
-      // pre-existing and previously unreachable; the Phase 15 story
-      // selection can now reach it for a non-terminal game whose story is
-      // its final move.
-      //
-      // Clamping only ever moves the hold END earlier, never the zoom-in,
-      // and only when the hold would otherwise overrun the reset tail — so
-      // every game with room to spare keeps a byte-identical camera plan.
+      // When the last directive's own hold runs all the way to
+      // sceneDurationMs, the hold-end keyframe and the final unconditional
+      // reset land on the same timestamp and the camera never actually
+      // returns to full board: the Phase 12A freeze query at
+      // sceneDurationMs - 1 reads the full zoom, and the exported video
+      // ends frozen mid-zoom. Clamping only ever moves the hold END
+      // earlier, never the zoom-in, and only when the hold would otherwise
+      // overrun the reset tail — so every game with room to spare keeps a
+      // byte-identical camera plan.
       const latestHoldEndMs = sceneDurationMs - TERMINAL_ZOOM_OUT_MS;
       const holdEndMs = naturalHoldEndMs > latestHoldEndMs && latestHoldEndMs > atMs ? latestHoldEndMs : naturalHoldEndMs;
-      keyframes.push({ atMs: holdEndMs, centerX, centerY, zoom: climaxZoom });
+      keyframes.push({ atMs: holdEndMs, centerX, centerY, zoom });
     }
   }
   keyframes.push({ atMs: sceneDurationMs, centerX: 4, centerY: 4, zoom: 1 });
@@ -318,15 +344,7 @@ export function lowerToTimeline(game: GameRecord, plan: CinematicPlan, story: St
   const windowLastMove = consideredMoves[consideredMoves.length - 1];
   const windowReachesGameEnd = windowLastMove !== undefined && gameLastMove !== undefined && windowLastMove.ply === gameLastMove.ply;
   const terminalPlyAtMs = plan.finalPositionIsTerminal && windowReachesGameEnd && windowLastMove ? (plyAtMs.get(windowLastMove.ply) ?? null) : null;
-  const cameraPlan = buildCameraPlan(
-    plan.cameraDirectives,
-    plyAtMs,
-    plyDurationMs,
-    totalMs,
-    plan.settings.climaxZoom,
-    plan.settings.preClimaxRampMs,
-    terminalPlyAtMs
-  );
+  const cameraPlan = buildCameraPlan(plan.cameraDirectives, plyAtMs, plyDurationMs, totalMs, plan.settings.preClimaxRampMs, terminalPlyAtMs);
 
   const scene: Scene = {
     id: SCENE_ID,

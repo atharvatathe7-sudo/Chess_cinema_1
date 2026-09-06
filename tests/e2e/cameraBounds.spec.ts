@@ -331,16 +331,23 @@ test('Promotion race: the previously-black right edge is now real board content 
   page.on('pageerror', (err) => pageErrors.push(String(err)));
 
   await loadAnalyzeDirect(page, PROMOTION_RACE);
-  // Ground the test in the real Moment (confirms the game still produces
-  // it, same as the other two tests), without using its own targetTimeMs
-  // for sampling — see this file's module comment and
-  // decodeEdgeLuminanceAtFraction's own doc comment for why.
-  await expect(page.locator('#moments-list button.moment-btn', { hasText: 'Pawn Journey' }).first()).toBeVisible();
-
+  // Phase 18A — Cinematic Clip Windowing selects a short clip around the
+  // story's own central conflict (here, plies 6-10), so the pawn-journey
+  // archetype's own earliest evidence (ply 1) now falls outside the
+  // exported window. state/moments.ts's own documented safe-omission rule
+  // (a Moment whose evidence anchor has no MoveBeat in the lowered Timeline
+  // is never surfaced — see its own module comment) correctly drops this
+  // Moment from the windowed clip entirely, so there is no longer a
+  // "Pawn Journey" button to ground the test in. The actual pixel/edge
+  // assertion below does not depend on this precondition and is unaffected.
   const webmBytes = await exportVideoBytes(page);
-  // 0.5 * video.duration — independently confirmed (real pre-fix/post-fix
-  // frame comparison, and a stability sweep across 0.3-0.7) to sit inside
-  // the camera's zoom-hold window for this game.
+  // 0.5 * video.duration — for this windowed clip now sits inside the
+  // camera's own ramp into the climax (a modest, still-off-full-board
+  // zoom), not deep in a zoom hold, but the Phase 7B clamp is exercised at
+  // any zoom > 1 whose raw center would otherwise push the viewport past
+  // the board edge, and empirically still does here — independently
+  // re-confirmed by direct pixel sampling after Phase 18B's per-beat
+  // camera framing changed this game's own keyframe shape.
   const MID_VIDEO_FRACTION = 0.5;
   const readout = await decodeEdgeLuminanceAtFraction(page, webmBytes, MID_VIDEO_FRACTION);
 

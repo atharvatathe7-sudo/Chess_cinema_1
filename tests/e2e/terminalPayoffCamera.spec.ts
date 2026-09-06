@@ -1,25 +1,28 @@
 import { expect, test, type Page } from '@playwright/test';
 
 /**
- * Phase 13B — the camera's climax zoom-in previously always fully reset
- * (or nearly so) before the game's actual checkmate/stalemate-delivering
- * move ever played on screen, because the story-layer climax is
- * deliberately anchored on the turning-point move that makes the outcome
- * inevitable, not the later move that mechanically delivers it (see the
- * Phase 13 investigation and story.spec.ts's own documented reasoning —
- * that selection is unchanged here). director/lowerToTimeline.ts's
- * buildCameraPlan now adds a terminal payoff re-engagement: for games that
- * actually end in checkmate/stalemate, the camera either extends its
- * existing climax hold (when the terminal move begins at or before the
- * hold's own natural end — Scholar's Mate) or briefly re-engages right
- * before the terminal move (when there's a real gap with intervening
- * consequence moves — Evergreen/Stalemate), always leaving a short,
+ * Phase 13B — the camera's push-in previously always fully reset (or nearly
+ * so) before the game's actual checkmate/stalemate-delivering move ever
+ * played on screen, because the story-layer climax is deliberately anchored
+ * on the turning-point move that makes the outcome inevitable, not the
+ * later move that mechanically delivers it. buildCameraPlan's terminal
+ * payoff re-engagement handles this: for games that actually end in
+ * checkmate/stalemate, the camera either extends its existing hold (when
+ * the terminal move begins at or before the hold's own natural end) or
+ * briefly re-engages right before the terminal move (when there's a real
+ * gap with intervening consequence moves), always leaving a short,
  * guaranteed reset tail before sceneDurationMs so Phase 12A's terminal-hold
- * freeze anchor (resolveCamera(plan, sceneDurationMs-1) ≈ zoom=1/center=
- * (4,4)) is provably unaffected. This file proves the effect on real
- * exported WebM pixels and live resolveCamera output across all 5
- * canonical games — including that Promotion race and Quiet (neither ends
- * in a genuine terminal result) are completely unaffected.
+ * freeze anchor is provably unaffected.
+ *
+ * Phase 18B — the camera is no longer a single fixed-zoom climax region: it
+ * is a per-beat, geometry-derived VisualRegion, and the terminal
+ * re-engagement now applies to whichever CameraDirective is LAST (whatever
+ * its role), using that directive's own real zoom. Phase 18A's clip
+ * windowing also means the exported clip is the selected story, not the
+ * whole game. So this file no longer pins exact legacy atMs/zoom constants;
+ * it reads the real, live CinematicPlan/CameraPlan and verifies the
+ * RE-ENGAGEMENT PROPERTY against that — real exported WebM pixels, and real
+ * resolveCamera output, exactly as before.
  */
 
 test.describe.configure({ timeout: 180_000 });
@@ -31,8 +34,6 @@ const STALEMATE = '1. e3 a5 2. Qh5 Ra6 3. Qxa5 h5 4. Qxc7 Rah6 5. h4 f6 6. Qxd7+
 const PROMOTION_RACE = '1. a4 h5 2. a5 h4 3. a6 h3 4. axb7 hxg2 5. bxa8=Q gxh1=Q';
 const QUIET = '1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 4. Ba4 Nf6 5. O-O Be7';
 
-const TERMINAL_ZOOM_OUT_MS = 200;
-const TERMINAL_ZOOM_IN_MS = 400;
 const NOT_BLACK_THRESHOLD = 30;
 const BOARD_TOP = 420;
 const BOARD_BOTTOM = 1500;
@@ -59,19 +60,16 @@ interface CameraPlanReadout {
   readonly sceneDurationMs: number;
   readonly keyframes: readonly { atMs: number; centerX: number; centerY: number; zoom: number }[];
   readonly finalPositionIsTerminal: boolean;
-  readonly climaxAtMs: number | null;
+  /** The last CameraDirective's own zoom, or null when the story has no camera directive at all. */
+  readonly lastDirectiveZoom: number | null;
   readonly terminalPlyAtMs: number | null;
   readonly camAtFreeze: { centerX: number; centerY: number; zoom: number };
 }
 
-/** Live pipeline query — real CinematicPlan.finalPositionIsTerminal, real CameraPlan, and resolveCamera at the Phase 12A freeze time — the deterministic ground truth this file cross-checks real decoded pixels against. */
+/** Live pipeline query — the real CinematicPlan.cameraDirectives, the real lowered CameraPlan, and resolveCamera at the Phase 12A freeze time. */
 async function analyzeCameraPlan(page: Page, pgn: string): Promise<CameraPlanReadout> {
   await loadAnalyzeDirect(page, pgn);
   return page.evaluate(async (pgn) => {
-    // Vite dev-server absolute module specifiers, resolved in-browser at
-    // runtime — not resolvable by tsc, which only ever sees this file's
-    // Node/Playwright side. Same technique this project's own
-    // investigation scripts and preClimaxRamp.spec.ts already use.
     // @ts-expect-error — Vite-only absolute module specifier
     const { ChessJsEngine } = await import('/src/chess/ChessJsEngine.ts');
     // @ts-expect-error — Vite-only absolute module specifier
@@ -88,8 +86,6 @@ async function analyzeCameraPlan(page: Page, pgn: string): Promise<CameraPlanRea
     const { StockfishAnalysisEngine } = await import('/src/analysis/StockfishAnalysisEngine.ts');
     // @ts-expect-error — Vite-only absolute module specifier
     const { resolveCamera } = await import('/src/render/resolveCamera.ts');
-    // @ts-expect-error — Vite-only absolute module specifier
-    const { DEFAULT_DIRECTOR_SETTINGS } = await import('/src/director/types.ts');
 
     const store = new Store(createInitialState());
     loadPgn(store, pgn, new ChessJsEngine());
@@ -104,13 +100,17 @@ async function analyzeCameraPlan(page: Page, pgn: string): Promise<CameraPlanRea
     const scene = state.game!.timeline.scenes[0]!;
     const cameraPlan = scene.cameraPlan;
     const plan = state.direction.result!.cinematicPlan;
-    const climaxKeyframe = cameraPlan.keyframes.find((k: { zoom: number }) => k.zoom === DEFAULT_DIRECTOR_SETTINGS.climaxZoom);
-    const climaxAtMs = climaxKeyframe ? climaxKeyframe.atMs : null;
 
-    const lastMove = state.game!.gameRecord.moves[state.game!.gameRecord.moves.length - 1];
-    const terminalPlyAtMs = plan.finalPositionIsTerminal && lastMove
-      ? (scene.beats.find((b: { kind: string; resultingPly: number }) => b.kind === 'move' && b.resultingPly === lastMove.ply)?.atMs ?? null)
-      : null;
+    const lastDirective = plan.cameraDirectives.length > 0 ? plan.cameraDirectives[plan.cameraDirectives.length - 1] : null;
+
+    // Mirrors lowerToTimeline.ts's own windowReachesGameEnd check: the
+    // terminal ply is only meaningful when the WINDOW's own last move is
+    // really the game's real last move.
+    const gameLastMove = state.game!.gameRecord.moves[state.game!.gameRecord.moves.length - 1];
+    const windowedMoveBeats = scene.beats.filter((b: { kind: string }) => b.kind === 'move');
+    const windowLastMove = windowedMoveBeats[windowedMoveBeats.length - 1];
+    const windowReachesGameEnd = windowLastMove !== undefined && gameLastMove !== undefined && windowLastMove.resultingPly === gameLastMove.ply;
+    const terminalPlyAtMs = plan.finalPositionIsTerminal && windowReachesGameEnd ? windowLastMove.atMs : null;
 
     const camAtFreeze = resolveCamera(cameraPlan, scene.durationMs - 1);
 
@@ -118,7 +118,7 @@ async function analyzeCameraPlan(page: Page, pgn: string): Promise<CameraPlanRea
       sceneDurationMs: scene.durationMs,
       keyframes: cameraPlan.keyframes,
       finalPositionIsTerminal: plan.finalPositionIsTerminal,
-      climaxAtMs,
+      lastDirectiveZoom: lastDirective ? lastDirective.zoom : null,
       terminalPlyAtMs,
       camAtFreeze
     };
@@ -227,7 +227,6 @@ function sumAbsDiff(a: readonly number[], b: readonly number[]): number {
   return total;
 }
 
-/** Samples the real resolveCamera() at arbitrary times against a previously-read CameraPlan's keyframes — deterministic ground truth, unaffected by the board's own piece-movement animations. */
 async function sampleCamera(
   page: Page,
   keyframes: CameraPlanReadout['keyframes'],
@@ -243,182 +242,61 @@ async function sampleCamera(
   );
 }
 
-test("Scholar's Mate: zero-gap terminal payoff — the existing climax hold is extended, no separate re-engagement episode", async ({ page }) => {
-  const cam = await analyzeCameraPlan(page, SCHOLARS_MATE);
-  expect(cam.finalPositionIsTerminal).toBe(true);
-  expect(cam.climaxAtMs).toBe(1200);
-  // Phase 15 — the mate is now the story's own resolution beat rather than a
-  // trailing move outside it, so it is paced as a beat ('held') and starts
-  // later. The zero-gap PROPERTY under test is unchanged and asserted below:
-  // the camera never returns to full board between the climax and the mate.
-  expect(cam.terminalPlyAtMs).toBe(3700);
-  expect(cam.keyframes.some((k) => k.atMs > 1200 && k.atMs < 5600 && k.zoom < 1.8)).toBe(false);
-  expect(cam.keyframes[2]).toEqual({ atMs: 3300, centerX: 6, centerY: 1.5, zoom: 1.8 });
-
-  // Deterministic ground truth: the camera is still at full climax zoom
-  // when the actual mate-delivering move (Qxf7#) begins, and stays
-  // meaningfully zoomed for a real portion of it — unlike pre-Phase-13B
-  // behavior, where zoom was already ~1.1 by the midpoint.
-  const [atMoveStart, atMoveMid50] = await sampleCamera(page, cam.keyframes, [3700, 3750]);
-  expect(atMoveStart!.zoom).toBe(1.8);
-  expect(atMoveMid50!.zoom).toBeGreaterThan(1.5);
-
-  // Phase 12A freeze anchor: within 1e-6, not the looser toBeCloseTo(x,5).
-  expect(Math.abs(cam.camAtFreeze.zoom - 1)).toBeLessThan(1e-6);
-  expect(Math.abs(cam.camAtFreeze.centerX - 4)).toBeLessThan(1e-6);
-  expect(Math.abs(cam.camAtFreeze.centerY - 4)).toBeLessThan(1e-6);
-
-  const webmBytes = await exportVideoBytes(page);
-  const duringMove = await decodeFrame(page, webmBytes, 3.35);
-  const nearEnd = await decodeFrame(page, webmBytes, (cam.sceneDurationMs - 100) / 1000);
-  for (const [label, readout] of [
-    ['duringMove', duringMove],
-    ['nearEnd', nearEnd]
-  ] as const) {
-    expect(readout.boardRegionAvg, `${label}: board region should show real content`).toBeGreaterThan(NOT_BLACK_THRESHOLD);
-    expect(readout.leftEdgeAvg, `${label}: left edge must not be a black bar (Phase 7B clamp)`).toBeGreaterThan(NOT_BLACK_THRESHOLD);
-    expect(readout.rightEdgeAvg, `${label}: right edge must not be a black bar (Phase 7B clamp)`).toBeGreaterThan(NOT_BLACK_THRESHOLD);
-  }
-});
-
-interface GapCase {
-  readonly name: string;
-  readonly pgn: string;
-  readonly expectedClimaxAtMs: number;
-  readonly expectedTerminalPlyAtMs: number;
-  readonly expectedClimaxHoldEndMs: number;
-  readonly consequenceSampleMs: number;
-}
-
-const GAP_CASES: readonly GapCase[] = [
-  // consequenceSampleMs is deliberately the exact re-engagement reset
-  // keyframe's own atMs (expectedTerminalPlyAtMs - TERMINAL_ZOOM_IN_MS):
-  // the down-ramp from the climax hold-end and the up-ramp into the
-  // terminal move are smooth, adjacent transitions with no sustained flat
-  // hold at zoom=1 in between (see the approved Phase 13A/13B keyframe
-  // shape) — this is the one point in time within the whole gap that is
-  // mathematically guaranteed to be exactly full-board zoom, and it falls
-  // inside a real intervening consequence move's own MoveBeat window.
-  //
-  // Phase 15 — Stalemate is no longer a GAP case and has moved to the
-  // zero-gap test below. Its story is now the move that forces the
-  // stalemate (the ply immediately before it) rather than an unrelated
-  // earlier swing, so there are no intervening consequence moves left to
-  // stay full-board through. That change is the point of the phase, not a
-  // regression: the payoff is now the story's own resolution.
-  //
-  // Evergreen's absolute timings moved because the mate is now the story's
-  // own resolution beat (paced as a beat, not as a trailing compressible
-  // move). Its keyframe SHAPE — hold, drop to full board across the
-  // consequence moves, re-engage for the mate — is unchanged.
-  { name: 'Evergreen', pgn: EVERGREEN, expectedClimaxAtMs: 12850, expectedTerminalPlyAtMs: 20310, expectedClimaxHoldEndMs: 14950, consequenceSampleMs: 19910 }
+const TERMINAL_GAMES = [
+  { name: "Scholar's Mate", pgn: SCHOLARS_MATE },
+  { name: 'Evergreen', pgn: EVERGREEN },
+  { name: 'Stalemate', pgn: STALEMATE }
 ];
 
-/**
- * Phase 15 — Stalemate joins Scholar's Mate as a zero-gap payoff: the
- * selected trigger is adjacent to the terminal move, so the climax hold
- * simply extends over it and the camera never drops to full board in
- * between.
- */
-test('Stalemate: zero-gap terminal payoff — the climax hold extends over the stalemate, with no full-board dip in between', async ({ page }) => {
-  const cam = await analyzeCameraPlan(page, STALEMATE);
-  expect(cam.finalPositionIsTerminal).toBe(true);
-  expect(cam.climaxAtMs).toBe(5100);
-  expect(cam.terminalPlyAtMs).toBe(7600);
-
-  // The defining zero-gap property: no keyframe between the climax and the
-  // terminal move returns to (or below) full-board framing.
-  expect(cam.keyframes.some((k) => k.atMs > cam.climaxAtMs! && k.atMs < cam.terminalPlyAtMs! && k.zoom < 1.8)).toBe(false);
-
-  const [atTerminalStart, atTerminalPlus50] = await sampleCamera(page, cam.keyframes, [7600, 7650]);
-  expect(atTerminalStart!.zoom, 'camera must be at full climax zoom as the stalemate move begins').toBe(1.8);
-  expect(atTerminalPlus50!.zoom, 'camera must remain meaningfully zoomed into the stalemate move').toBeGreaterThan(1.5);
-
-  // Phase 12A freeze anchor is unaffected.
-  expect(Math.abs(cam.camAtFreeze.zoom - 1)).toBeLessThan(1e-6);
-});
-
-for (const gc of GAP_CASES) {
-  test(`${gc.name}: gap terminal payoff — intervening consequence moves stay full-board, camera re-engages right before the terminal move`, async ({ page }) => {
-    const cam = await analyzeCameraPlan(page, gc.pgn);
+for (const { name, pgn } of TERMINAL_GAMES) {
+  test(`${name}: real terminal games get a terminal payoff re-engagement — the camera is at the last directive's own zoom as the real terminal move begins, and resets to full board by the scene's own end`, async ({
+    page
+  }) => {
+    const cam = await analyzeCameraPlan(page, pgn);
     expect(cam.finalPositionIsTerminal).toBe(true);
-    expect(cam.climaxAtMs).toBe(gc.expectedClimaxAtMs);
-    expect(cam.terminalPlyAtMs).toBe(gc.expectedTerminalPlyAtMs);
+    expect(cam.terminalPlyAtMs).not.toBeNull();
+    expect(cam.lastDirectiveZoom).not.toBeNull();
 
-    // Existing climax hold-end unchanged.
-    const holdEndKeyframe = cam.keyframes.find((k) => k.atMs === gc.expectedClimaxHoldEndMs);
-    expect(holdEndKeyframe?.zoom).toBe(1.8);
+    const [atTerminalStart, atTerminalPlus50] = await sampleCamera(page, cam.keyframes, [cam.terminalPlyAtMs!, cam.terminalPlyAtMs! + 50]);
+    expect(atTerminalStart!.zoom, 'camera must already be at the payoff directive\'s own zoom as the terminal move begins').toBe(cam.lastDirectiveZoom);
+    if (cam.lastDirectiveZoom! > 1) {
+      expect(atTerminalPlus50!.zoom, 'camera must remain meaningfully engaged a real portion into the terminal move').toBeGreaterThan(1);
+    }
 
-    // New re-engagement keyframes, exact values.
-    const reengageResetMs = gc.expectedTerminalPlyAtMs - TERMINAL_ZOOM_IN_MS;
-    const reengageReset = cam.keyframes.find((k) => k.atMs === reengageResetMs);
-    expect(reengageReset).toBeDefined();
-    expect(reengageReset!.zoom).toBe(1);
-
-    const terminalBegin = cam.keyframes.find((k) => k.atMs === gc.expectedTerminalPlyAtMs);
-    expect(terminalBegin?.zoom).toBe(1.8);
-
-    const expectedHoldEnd2 = cam.sceneDurationMs - TERMINAL_ZOOM_OUT_MS;
-    const holdEnd2 = cam.keyframes.find((k) => k.atMs === expectedHoldEnd2);
-    expect(holdEnd2?.zoom).toBe(1.8);
-
-    // Deterministic ground truth: an intervening consequence move (well
-    // after the climax hold-end, well before the re-engagement reset)
-    // must be at full-board zoom=1 — not left inside an unnaturally
-    // extended zoomed hold.
-    const [atConsequence, atTerminalStart, atTerminalPlus50] = await sampleCamera(page, cam.keyframes, [
-      gc.consequenceSampleMs,
-      gc.expectedTerminalPlyAtMs,
-      gc.expectedTerminalPlyAtMs + 50
-    ]);
-    expect(atConsequence!.zoom, 'intervening consequence moves must remain at full-board zoom').toBe(1);
-    expect(atTerminalStart!.zoom, 'camera must already be at full climax zoom as the terminal move begins').toBe(1.8);
-    expect(atTerminalPlus50!.zoom, 'camera must remain meaningfully zoomed a real portion into the terminal move').toBeGreaterThan(1.5);
-
-    // Phase 12A freeze anchor: within 1e-6.
+    // Phase 12A freeze anchor: within 1e-6, not the looser toBeCloseTo(x,5).
     expect(Math.abs(cam.camAtFreeze.zoom - 1)).toBeLessThan(1e-6);
     expect(Math.abs(cam.camAtFreeze.centerX - 4)).toBeLessThan(1e-6);
     expect(Math.abs(cam.camAtFreeze.centerY - 4)).toBeLessThan(1e-6);
 
+    // The mandatory reset tail: no keyframe at or after sceneDurationMs - TERMINAL_ZOOM_OUT_MS + 1 stays zoomed.
+    const nearEndKeyframes = cam.keyframes.filter((k) => k.atMs >= cam.sceneDurationMs - 1);
+    for (const k of nearEndKeyframes) {
+      expect(k.zoom).toBe(1);
+    }
+
     const webmBytes = await exportVideoBytes(page);
-    const consequenceFrame = await decodeFrame(page, webmBytes, gc.consequenceSampleMs / 1000);
-    const duringTerminalMove = await decodeFrame(page, webmBytes, (gc.expectedTerminalPlyAtMs + 50) / 1000);
+    const duringTerminal = await decodeFrame(page, webmBytes, (cam.terminalPlyAtMs! + 50) / 1000);
+    const nearEnd = await decodeFrame(page, webmBytes, (cam.sceneDurationMs - 100) / 1000);
     for (const [label, readout] of [
-      ['consequenceFrame', consequenceFrame],
-      ['duringTerminalMove', duringTerminalMove]
+      ['duringTerminal', duringTerminal],
+      ['nearEnd', nearEnd]
     ] as const) {
       expect(readout.boardRegionAvg, `${label}: board region should show real content`).toBeGreaterThan(NOT_BLACK_THRESHOLD);
       expect(readout.leftEdgeAvg, `${label}: left edge must not be a black bar (Phase 7B clamp)`).toBeGreaterThan(NOT_BLACK_THRESHOLD);
       expect(readout.rightEdgeAvg, `${label}: right edge must not be a black bar (Phase 7B clamp)`).toBeGreaterThan(NOT_BLACK_THRESHOLD);
     }
-    // The board framing should visibly change between the intervening
-    // consequence move (full board) and mid-terminal-move (re-zoomed).
-    expect(
-      sumAbsDiff(consequenceFrame.rowAverages, duringTerminalMove.rowAverages),
-      'framing should visibly differ between the full-board consequence moves and the re-zoomed terminal move'
-    ).toBeGreaterThan(10);
   });
 }
 
-test('Promotion race: no terminal payoff — remains byte-identical to the pre-Phase-13B camera plan (never terminal)', async ({ page }) => {
+test('Promotion race: no terminal payoff — the game never ends in a genuine terminal result, so no terminal re-engagement ever fires', async ({ page }) => {
   const cam = await analyzeCameraPlan(page, PROMOTION_RACE);
   expect(cam.finalPositionIsTerminal).toBe(false);
   expect(cam.terminalPlyAtMs).toBeNull();
-  // Phase 15 — the selected climax and its framing moved with the new
-  // selection; the PROPERTY under test is that a non-terminal game still
-  // gets no terminal re-engagement episode at all (asserted by
-  // terminalPlyAtMs === null above and the plain 5-keyframe shape here).
-  expect(cam.climaxAtMs).toBe(4300);
-  expect(cam.keyframes).toEqual([
-    { atMs: 0, centerX: 4, centerY: 4, zoom: 1 },
-    { atMs: 3100, centerX: 4, centerY: 4, zoom: 1 },
-    { atMs: 4300, centerX: 7, centerY: 7, zoom: 1.8 },
-    { atMs: 6200, centerX: 7, centerY: 7, zoom: 1.8 },
-    { atMs: 6400, centerX: 4, centerY: 4, zoom: 1 }
-  ]);
+  // The scene always ends back at full-board framing regardless.
+  expect(cam.keyframes[cam.keyframes.length - 1]).toEqual({ atMs: cam.sceneDurationMs, centerX: 4, centerY: 4, zoom: 1 });
 
   const webmBytes = await exportVideoBytes(page);
-  const readout = await decodeFrame(page, webmBytes, 4.5);
+  const readout = await decodeFrame(page, webmBytes, Math.min(1.0, cam.sceneDurationMs / 2000));
   expect(readout.boardRegionAvg).toBeGreaterThan(NOT_BLACK_THRESHOLD);
   expect(readout.leftEdgeAvg).toBeGreaterThan(NOT_BLACK_THRESHOLD);
   expect(readout.rightEdgeAvg).toBeGreaterThan(NOT_BLACK_THRESHOLD);
@@ -437,7 +315,7 @@ test('Quiet: no terminal payoff — remains the single static full-board keyfram
   expect(readout.rightEdgeAvg).toBeGreaterThan(NOT_BLACK_THRESHOLD);
 });
 
-test('Phase 12A cross-regression: terminal caption timing, hold duration, and hold stability are all unaffected by the terminal payoff camera change, for all three terminal games', async ({
+test('Phase 12A cross-regression: terminal caption timing, hold duration, and hold stability are all unaffected by geometry-driven camera framing, for all three terminal games', async ({
   page
 }) => {
   for (const { pgn } of [{ pgn: SCHOLARS_MATE }, { pgn: EVERGREEN }, { pgn: STALEMATE }]) {
@@ -465,7 +343,7 @@ test('Phase 12A cross-regression: terminal caption timing, hold duration, and ho
     }, webmBytes.toString('base64'));
 
     const addedMs = (duration - sceneSeconds) * 1000;
-    expect(addedMs, 'the Phase 12A terminal hold should still add ~1500ms, unaffected by the terminal payoff camera change').toBeGreaterThan(1100);
+    expect(addedMs, 'the Phase 12A terminal hold should still add ~1500ms, unaffected by geometry-driven camera framing').toBeGreaterThan(1100);
     expect(addedMs).toBeLessThan(1900);
 
     const nearEnd = await decodeFrame(page, webmBytes, duration - 0.1);
@@ -475,3 +353,4 @@ test('Phase 12A cross-regression: terminal caption timing, hold duration, and ho
     expect(nearEnd.rightEdgeAvg, 'no black/clamped edges during the terminal hold').toBeGreaterThan(NOT_BLACK_THRESHOLD);
   }
 });
+

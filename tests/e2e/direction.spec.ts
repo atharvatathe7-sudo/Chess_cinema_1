@@ -54,11 +54,14 @@ test('Load -> Analyze -> Generate Cinematic replaces the timeline, and every exi
   );
   const directMs = Date.now() - directStart;
 
-  // The cinematic timeline genuinely differs from the trivial one (Director's
-  // pacing is not a flat 600ms/move) — the total duration changed, and
-  // move-indicator reflects the new Timeline immediately.
+  // The cinematic timeline genuinely differs from the trivial one — not just
+  // in pacing (Director's pacing is not a flat 600ms/move), but in move
+  // count: Phase 18A's Cinematic Clip Windowing selects a shorter clip
+  // around the story's own central conflict (9 of Evergreen's 47 plies)
+  // rather than replaying the whole game. move-indicator reflects the new,
+  // windowed Timeline immediately.
   const indicatorAfterDirect = await page.locator('#move-indicator').innerText();
-  expect(indicatorAfterDirect).toContain('/ 47');
+  expect(indicatorAfterDirect).toContain('/ 9');
   expect(indicatorAfterDirect).not.toContain('28.2s');
   expect(indicatorAfterDirect).toMatch(/0\.0s \/ \d+\.\d+s/);
 
@@ -74,11 +77,11 @@ test('Load -> Analyze -> Generate Cinematic replaces the timeline, and every exi
   // Next / Prev / Play-Pause / Restart against the NEW timeline.
   await page.click('#next-btn');
   await page.waitForTimeout(60);
-  await expect(page.locator('#move-indicator')).toContainText('Move 2 / 47');
+  await expect(page.locator('#move-indicator')).toContainText('Move 2 / 9');
 
   await page.click('#prev-btn');
   await page.waitForTimeout(60);
-  await expect(page.locator('#move-indicator')).toContainText('Move 1 / 47');
+  await expect(page.locator('#move-indicator')).toContainText('Move 1 / 9');
 
   await page.click('#play-btn');
   await expect(page.locator('#play-btn')).toHaveText('Pause');

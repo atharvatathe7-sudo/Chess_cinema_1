@@ -142,7 +142,7 @@ export function buildCinematicPlan(
     pacingForPly(entry.ply, entry.treatment, story.beats, explanationOpportunityPlies, settings)
   );
 
-  const cameraDirectives = deriveCameraDirectives(game, understanding, story);
+  const cameraDirectives = deriveCameraDirectives(game, analysis, understanding, story, settings);
   const annotationDirectives = deriveAnnotationDirectives(game, analysis, understanding, story);
   const transitionDirectives = buildTransitionDirectives(story.beats, settings);
 

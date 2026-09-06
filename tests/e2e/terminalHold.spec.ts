@@ -292,17 +292,30 @@ for (const game of TERMINAL_GAMES) {
   });
 }
 
-test('Scholar\'s Mate: an earlier, non-terminal Moment ("Climax") is completely unaffected by the terminal hold — its own start timing is unchanged', async ({ page }) => {
+test('Scholar\'s Mate: an earlier, non-terminal Moment ("Climax") is completely unaffected by the terminal hold — its own end-of-window handoff to the terminal Moment is unchanged', async ({ page }) => {
   await loadAnalyzeDirect(page, SCHOLARS_MATE);
+
+  // Phase 18A — Cinematic Clip Windowing selects a short clip anchored on
+  // the story's own central conflict, so for a game this short the exported
+  // clip now begins right at the Climax itself (atMs=0): there is no longer
+  // a "before any Moment begins" gap to sample (the original assumption
+  // here, "Climax starts at atMs=1200", predates windowing). The property
+  // this test exists to protect is unchanged, though: export/runExport.ts's
+  // terminal hold only ever APPENDS frames after the scene's own natural
+  // end, so an earlier caption's own boundary — here the real, live
+  // Climax -> Checkmate handoff mid-video — must be exactly where the
+  // Timeline itself says it is, not shifted by whatever is appended after
+  // it. Both timestamps are queried live via the real Moments UI rather
+  // than hardcoded, so this stays correct if pacing ever changes again.
+  const climaxSeconds = await secondsAtMoment(page, 'Climax');
+  const checkmateSeconds = await secondsAtMoment(page, 'Checkmate');
   const webmBytes = await exportVideoBytes(page);
 
-  // Before the Climax Moment starts (atMs=1200 in the real pipeline, i.e. well under 1s): no caption.
-  const beforeClimax = await decodeFrame(page, webmBytes, 0.5);
-  // Inside the Climax Moment's own window: caption present.
-  const duringClimax = await decodeFrame(page, webmBytes, 2.0);
+  const withinClimax = await decodeFrame(page, webmBytes, climaxSeconds);
+  const withinCheckmate = await decodeFrame(page, webmBytes, checkmateSeconds);
 
-  expect(beforeClimax.captionZoneAvgLuminance, 'before any Moment begins, no caption should be present').toBeLessThan(3);
-  expect(duringClimax.captionZoneAvgLuminance, 'during the Climax Moment, a caption should be present').toBeGreaterThan(3);
+  expect(withinClimax.captionZoneAvgLuminance, 'the Climax caption should be visible within its own window').toBeGreaterThan(3);
+  expect(withinCheckmate.captionZoneAvgLuminance, 'the terminal Checkmate caption should be visible within its own window, past the Climax handoff').toBeGreaterThan(3);
 });
 
 test("Scholar's Mate: the Phase 11 opening hook still appears correctly at t=0 and fades by ~1s, unaffected by the terminal hold appended at the end", async ({ page }) => {

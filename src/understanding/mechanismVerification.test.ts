@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { PlyAnalysis } from '../analysis/types';
 import type { ForcedSequence, TacticalMotifInstance, ThreatRecord } from './types';
 import { motifInstanceKeyFor } from './motifs';
-import { anchoredToMove, isNovelOnPly, verifyMechanism, type MechanismInputs } from './mechanismVerification';
+import { anchoredToMove, isNovelOnPly, isRealized, verifyMechanism, type MechanismInputs } from './mechanismVerification';
 
 /**
  * Phase 15 (M5) — mechanism verification.
@@ -43,13 +43,14 @@ function ply(overrides: Partial<PlyAnalysis> = {}): PlyAnalysis {
 }
 
 function motif(
-  overrides: Partial<TacticalMotifInstance> & Pick<TacticalMotifInstance, 'motif' | 'ply'> & { attacker: string; targets: readonly string[] }
+  overrides: Partial<TacticalMotifInstance> &
+    Pick<TacticalMotifInstance, 'motif' | 'ply'> & { attacker: string; targets: readonly string[]; throughSquare?: string }
 ): TacticalMotifInstance {
-  const { attacker, targets, ...rest } = overrides;
+  const { attacker, targets, throughSquare, ...rest } = overrides;
   return {
     id: `motif-${rest.ply}-${rest.motif}`,
-    squares: { attacker, targets },
-    motifInstanceKey: motifInstanceKeyFor(rest.motif, attacker, targets, undefined),
+    squares: { attacker, targets, ...(throughSquare !== undefined ? { throughSquare } : {}) },
+    motifInstanceKey: motifInstanceKeyFor(rest.motif, attacker, targets, throughSquare),
     firstSeenPly: rest.ply,
     geometryEvidence: { basis: 'chess-rule', sourcePlies: [rest.ply], note: 'fixture' },
     ...rest
@@ -94,6 +95,57 @@ describe('V1 anchoring', () => {
   });
 
   it('rejects a motif the move never touched', () => {
+    expect(anchoredToMove(motif({ motif: 'battery', ply: 10, attacker: 'h1', targets: ['h8'] }), 'e3f2')).toBe(false);
+  });
+
+  /**
+   * Phase 18F — the discovery/revealed-line-motif fix. Before this, V1 only
+   * ever inspected attacker/targets against from/to, so a discovery — whose
+   * attacker never moved and whose target is rarely the move's own
+   * destination — could never pass V1 at all, regardless of how clean the
+   * mechanism was. A discovery's own throughSquare is always exactly the
+   * move's own vacated square (motifs.ts sets it to
+   * movePlayedUci.slice(0, 2) unconditionally for every discovery
+   * instance), so `throughSquare === from` is a hard structural fact, not
+   * an inference — this is the real game_04 shape (Bf2 uncovering a
+   * discovered attack from e1 through e3 onto e5).
+   */
+  it('accepts a discovery whose throughSquare equals the move\'s own vacated square (the game_04 shape)', () => {
+    const discovery = motif({ motif: 'discovery', ply: 63, attacker: 'e1', targets: ['e5'], throughSquare: 'e3' });
+    expect(anchoredToMove(discovery, 'e3f2')).toBe(true);
+  });
+
+  it('accepts a line motif (pin/skewer/battery) whose own throughSquare equals the move\'s own vacated square', () => {
+    // A rook at a1 was blocked by a piece on c1; c1-d2 just vacated c1,
+    // revealing a pin/skewer down the c-file. The attacker (a1) and target
+    // (c7) are unrelated to this move's own squares — only throughSquare
+    // (c1, the vacated square) ties it to c1d2.
+    const revealedPin = motif({ motif: 'pin', ply: 20, attacker: 'a1', targets: ['c7'], throughSquare: 'c1' });
+    expect(anchoredToMove(revealedPin, 'c1d2')).toBe(true);
+  });
+
+  it('still rejects a line motif whose throughSquare does not correspond to this move — an unrelated nearby pattern is not swept in', () => {
+    // Same shape as game_04's own second pin: a genuinely different,
+    // unrelated line motif that merely happens to exist on the same ply.
+    // Its throughSquare (e5) is not this move's vacated square (e3), so it
+    // must remain rejected even under the widened V1 test.
+    const unrelatedPin = motif({ motif: 'pin', ply: 63, attacker: 'e1', targets: ['e7'], throughSquare: 'e5' });
+    expect(anchoredToMove(unrelatedPin, 'e3f2')).toBe(false);
+  });
+
+  it('does not pass merely because a throughSquare is present — attacker/target anchoring is still evaluated independently', () => {
+    // A motif with a throughSquare set, but neither attacker/targets nor
+    // throughSquare touch this move at all.
+    const untouched = motif({ motif: 'skewer', ply: 10, attacker: 'h1', targets: ['h8'], throughSquare: 'h4' });
+    expect(anchoredToMove(untouched, 'e3f2')).toBe(false);
+  });
+
+  it('existing attacker/target anchoring is unaffected by the throughSquare addition', () => {
+    // Re-asserts the three pre-existing V1 cases verbatim, now that
+    // throughSquare has been added as a fourth, independent check.
+    expect(anchoredToMove(motif({ motif: 'battery', ply: 10, attacker: 'e3', targets: ['a7'] }), 'e3f2')).toBe(true);
+    expect(anchoredToMove(motif({ motif: 'battery', ply: 10, attacker: 'f2', targets: ['a7'] }), 'e3f2')).toBe(true);
+    expect(anchoredToMove(motif({ motif: 'pin', ply: 10, attacker: 'a1', targets: ['f2'] }), 'e3f2')).toBe(true);
     expect(anchoredToMove(motif({ motif: 'battery', ply: 10, attacker: 'h1', targets: ['h8'] }), 'e3f2')).toBe(false);
   });
 });
@@ -217,6 +269,215 @@ describe('verifyMechanism — withholding fabricated mechanisms', () => {
       inputs({ motifsForPly: [bystander], materialNetForMover: 900, swingAtConsequence: 900, threatsCreatedHere: [threat('h8', 10)] })
     );
     expect(result.mechanism).toBeNull();
+  });
+});
+
+describe('V3 realization window — sequence-tail fallback (Phase 18F)', () => {
+  // game_12's real shape: the forced sequence's own last ply IS the
+  // mechanism's trigger ply (`sequence.plies = [47, 48]`, trigger = 48).
+  // `sequence.plies.filter(p => p > 48)` is empty by construction — the
+  // trigger sits at the tail of its own sequence, not before it — so before
+  // this fix isRealized had no window to inspect at all and V3 always
+  // failed here regardless of what actually happened next.
+  const tailSequence: ForcedSequence = {
+    id: 'seq-tail',
+    startPly: 47,
+    endPly: 48,
+    plies: [47, 48],
+    forcingReason: 'material-forced-recapture',
+    evidence: { basis: 'chess-rule', sourcePlies: [47, 48], note: 'fixture' }
+  };
+
+  it('falls back to the single real next ply and passes V3 when it captures the target (the game_12 shape)', () => {
+    const trigger = ply({ ply: 48 });
+    const realizingReply: PlyAnalysis = ply({
+      ply: 49,
+      sideToMove: 'b',
+      movePlayedUci: 'c5d4',
+      fenBefore: 'rnbqkbnr/pppppppp/8/2p5/3P4/8/PPP1PPPP/RNBQKBNR b KQkq - 0 1'
+    });
+    const pin = motif({ motif: 'pin', ply: 48, attacker: 'f2', targets: ['d4'] });
+
+    const verified = isRealized(
+      pin,
+      inputs({
+        ply: trigger,
+        sequence: tailSequence,
+        allPliesByNumber: new Map([
+          [47, ply({ ply: 47 })],
+          [48, trigger],
+          [49, realizingReply]
+        ])
+      })
+    );
+
+    expect(verified).toBe(true);
+  });
+
+  it('falls back to the single real next ply and still fails V3 when it does not realize the target', () => {
+    const trigger = ply({ ply: 48 });
+    const quietReply: PlyAnalysis = ply({ ply: 49, sideToMove: 'b', movePlayedUci: 'g8f6', fenBefore: QUIET_FEN });
+    const pin = motif({ motif: 'pin', ply: 48, attacker: 'f2', targets: ['d4'] });
+
+    const verified = isRealized(
+      pin,
+      inputs({
+        ply: trigger,
+        sequence: tailSequence,
+        allPliesByNumber: new Map([
+          [47, ply({ ply: 47 })],
+          [48, trigger],
+          [49, quietReply]
+        ])
+      })
+    );
+
+    expect(verified).toBe(false);
+  });
+
+  it('does not treat the fallback ply as "forced" — a piece merely leaving the target square does not count, unlike a genuine sequence member', () => {
+    // The reply moves FROM the target square (d4) without capturing
+    // anything. Under "compelled to move" this would satisfy V3 for a ply
+    // that is actually a member of the sequence, but ply 49 is NOT a
+    // member of tailSequence.plies (that's exactly why the forward filter
+    // came back empty), so it must not count here.
+    const trigger = ply({ ply: 48 });
+    const leavingReply: PlyAnalysis = ply({ ply: 49, sideToMove: 'b', movePlayedUci: 'd4d3', fenBefore: QUIET_FEN });
+    const pin = motif({ motif: 'pin', ply: 48, attacker: 'f2', targets: ['d4'] });
+
+    const verified = isRealized(
+      pin,
+      inputs({
+        ply: trigger,
+        sequence: tailSequence,
+        allPliesByNumber: new Map([
+          [47, ply({ ply: 47 })],
+          [48, trigger],
+          [49, leavingReply]
+        ])
+      })
+    );
+
+    expect(verified).toBe(false);
+  });
+
+  it('a genuine sequence member being compelled to move off the target still counts — the fallback did not weaken this', () => {
+    // Contrast case: identical "leaves the target square" shape as above,
+    // but ply 49 IS itself part of the forced sequence this time, so the
+    // forward filter is non-empty and the fallback path never engages.
+    const memberSequence: ForcedSequence = {
+      id: 'seq-member',
+      startPly: 47,
+      endPly: 49,
+      plies: [47, 48, 49],
+      forcingReason: 'material-forced-recapture',
+      evidence: { basis: 'chess-rule', sourcePlies: [47, 48, 49], note: 'fixture' }
+    };
+    const trigger = ply({ ply: 48 });
+    const leavingReply: PlyAnalysis = ply({ ply: 49, sideToMove: 'b', movePlayedUci: 'd4d3', fenBefore: QUIET_FEN });
+    const pin = motif({ motif: 'pin', ply: 48, attacker: 'f2', targets: ['d4'] });
+
+    const verified = isRealized(
+      pin,
+      inputs({
+        ply: trigger,
+        sequence: memberSequence,
+        allPliesByNumber: new Map([
+          [47, ply({ ply: 47 })],
+          [48, trigger],
+          [49, leavingReply]
+        ])
+      })
+    );
+
+    expect(verified).toBe(true);
+  });
+
+  it('leaves the pre-existing non-empty sequence window behaviour unchanged (forward filter has plies, fallback never engages)', () => {
+    // Identical shape to the pre-existing 'names a motif whose target is
+    // actually captured inside the forced window (V3)' test above — the
+    // forward filter is non-empty (trigger=10, sequence tail=11), so the
+    // fallback path added in this phase must never be reached.
+    const capturingReply: PlyAnalysis = ply({
+      ply: 11,
+      sideToMove: 'b',
+      movePlayedUci: 'c5d4',
+      fenBefore: 'rnbqkbnr/pppppppp/8/2p5/3P4/8/PPP1PPPP/RNBQKBNR b KQkq - 0 1'
+    });
+    const normalSequence: ForcedSequence = {
+      id: 'seq-normal',
+      startPly: 10,
+      endPly: 11,
+      plies: [10, 11],
+      forcingReason: 'material-forced-recapture',
+      evidence: { basis: 'chess-rule', sourcePlies: [10, 11], note: 'fixture' }
+    };
+    const trigger = ply();
+    const pin = motif({ motif: 'pin', ply: 10, attacker: 'f2', targets: ['d4'] });
+
+    const verified = isRealized(
+      pin,
+      inputs({
+        ply: trigger,
+        sequence: normalSequence,
+        allPliesByNumber: new Map([
+          [10, trigger],
+          [11, capturingReply]
+        ])
+      })
+    );
+
+    expect(verified).toBe(true);
+  });
+
+  it('end-to-end: verifyMechanism now names the mechanism when the trigger is the sequence tail and the fallback ply realizes it', () => {
+    const trigger = ply({ ply: 48 });
+    const realizingReply: PlyAnalysis = ply({
+      ply: 49,
+      sideToMove: 'b',
+      movePlayedUci: 'c5d4',
+      fenBefore: 'rnbqkbnr/pppppppp/8/2p5/3P4/8/PPP1PPPP/RNBQKBNR b KQkq - 0 1'
+    });
+    const pin = motif({ motif: 'pin', ply: 48, attacker: 'f2', targets: ['d4'] });
+
+    const result = verifyMechanism(
+      inputs({
+        ply: trigger,
+        motifsForPly: [pin],
+        sequence: tailSequence,
+        allPliesByNumber: new Map([
+          [47, ply({ ply: 47 })],
+          [48, trigger],
+          [49, realizingReply]
+        ])
+      })
+    );
+
+    expect(result.mechanism).toBe('pin');
+    expect(result.verified).toBe(true);
+    expect(result.passedTests).toContain('V3');
+  });
+
+  it('end-to-end: verifyMechanism still withholds the mechanism when the sequence-tail fallback ply does not realize it and nothing else explains the consequence', () => {
+    const trigger = ply({ ply: 48 });
+    const quietReply: PlyAnalysis = ply({ ply: 49, sideToMove: 'b', movePlayedUci: 'g8f6', fenBefore: QUIET_FEN });
+    const pin = motif({ motif: 'pin', ply: 48, attacker: 'f2', targets: ['d4'] });
+
+    const result = verifyMechanism(
+      inputs({
+        ply: trigger,
+        motifsForPly: [pin],
+        sequence: tailSequence,
+        allPliesByNumber: new Map([
+          [47, ply({ ply: 47 })],
+          [48, trigger],
+          [49, quietReply]
+        ])
+      })
+    );
+
+    expect(result.mechanism).toBeNull();
+    expect(result.verified).toBe(false);
   });
 });
 

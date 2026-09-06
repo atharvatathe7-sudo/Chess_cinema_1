@@ -75,11 +75,27 @@ export interface MechanismInputs {
  * used. This is the existing mechanismInvolvesMovedPiece rule from
  * state/moments.ts, moved upstream and applied per candidate motif rather
  * than only to motifsTriggered[0].
+ *
+ * Phase 18F — also anchored when the motif's own throughSquare equals the
+ * move's own origin. For a discovery, throughSquare IS the vacated square
+ * by construction (motifs.ts sets it to exactly `movePlayedUci.slice(0,2)`
+ * for every discovery instance, always) — so `throughSquare === from` is a
+ * hard, structural fact that THIS move is what opened the line, not an
+ * inference. This does not make V1 pass merely because a throughSquare
+ * exists: a pin/skewer/battery's own throughSquare (its near blocking
+ * piece, unrelated to any vacated square) will equal `from` only when this
+ * move genuinely vacated that exact square, so an unrelated nearby line
+ * motif with a different throughSquare is unaffected and still rejected.
  */
 export function anchoredToMove(motif: TacticalMotifInstance, moveUci: string): boolean {
   const from = moveUci.slice(0, 2);
   const to = moveUci.slice(2, 4);
-  return motif.squares.attacker === from || motif.squares.attacker === to || motif.squares.targets.includes(to);
+  return (
+    motif.squares.attacker === from ||
+    motif.squares.attacker === to ||
+    motif.squares.targets.includes(to) ||
+    motif.squares.throughSquare === from
+  );
 }
 
 /** V2 — the pattern did not already exist before this ply. */
@@ -91,10 +107,25 @@ export function isNovelOnPly(motif: TacticalMotifInstance): boolean {
  * The plies during which this move's consequence plays out: its own forced
  * sequence when it opened one, otherwise just the immediate reply. Bounded
  * by real structure (ForcedSequence), never by an arbitrary lookahead.
+ *
+ * Phase 18F — a forced sequence whose own last ply IS the trigger ply
+ * itself (the turning point sits at the tail of its own sequence, not
+ * before it) has nothing left to filter forward to:
+ * `sequence.plies.filter(p => p > ply.ply)` is empty by construction, not
+ * because nothing happened next. The one real next ply after the trigger
+ * still exists and is still worth inspecting, so this falls back to it
+ * exactly as the no-sequence case already does — never further, never
+ * searching multiple plies ahead. That fallback ply is NOT itself a member
+ * of this ForcedSequence (that is exactly why the filter came back empty),
+ * so isRealized below must not treat it as "forced" — only a literal
+ * capture on it can count, the same as any ordinary unforced reply.
  */
 function realizationWindow(inputs: MechanismInputs): readonly number[] {
   const { ply, sequence } = inputs;
-  if (sequence) return sequence.plies.filter((p) => p > ply.ply);
+  if (sequence) {
+    const forward = sequence.plies.filter((p) => p > ply.ply);
+    if (forward.length > 0) return forward;
+  }
   return [ply.ply + 1];
 }
 
@@ -104,13 +135,16 @@ function realizationWindow(inputs: MechanismInputs): readonly number[] {
  *
  * "Captured" is checked structurally: a move landing on the target square
  * whose destination was occupied in that move's own fenBefore. "Compelled to
- * move" requires the window to be a forced sequence — a piece leaving a
- * square of its own free will is not evidence the motif did anything.
+ * move" requires the ply being checked to itself be a member of the forced
+ * sequence — a piece leaving a square of its own free will is not evidence
+ * the motif did anything, and (Phase 18F) neither is a piece leaving a
+ * square on realizationWindow's own post-sequence fallback ply, which by
+ * definition is not part of any ForcedSequence.
  */
 export function isRealized(motif: TacticalMotifInstance, inputs: MechanismInputs): boolean {
   const targets = new Set(motif.squares.targets);
   const window = realizationWindow(inputs);
-  const windowIsForced = inputs.sequence !== undefined;
+  const sequencePlies = inputs.sequence ? new Set(inputs.sequence.plies) : null;
 
   for (const plyNumber of window) {
     const laterPly = inputs.allPliesByNumber.get(plyNumber);
@@ -123,6 +157,7 @@ export function isRealized(motif: TacticalMotifInstance, inputs: MechanismInputs
       const { r, f } = coordsOf(to);
       if (boardBefore[r]?.[f]) return true;
     }
+    const windowIsForced = sequencePlies !== null && sequencePlies.has(plyNumber);
     if (windowIsForced && targets.has(from)) return true;
   }
   return false;

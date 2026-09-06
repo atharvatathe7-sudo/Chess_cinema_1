@@ -88,6 +88,10 @@ function cinematicPlan(annotationDirectives: readonly AnnotationDirective[]): Ci
     moveTreatmentPlan: [],
     cameraDirectives: [],
     annotationDirectives,
+    // Phase 18C — Moments are derived from annotationDirectives only; the
+    // tactical explanation channel is deliberately never a Moment/caption
+    // source, so this stays empty in every Moment fixture.
+    tacticalDirectives: [],
     transitionDirectives: [],
     finalPositionIsTerminal: false,
     settings: DEFAULT_DIRECTOR_SETTINGS

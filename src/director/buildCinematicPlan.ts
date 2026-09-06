@@ -4,6 +4,7 @@ import type { GameUnderstanding } from '../understanding/types';
 import type { BeatRole, MoveTreatment, StoryBeat, StoryPlan } from '../story/types';
 import { deriveCameraDirectives } from './camera';
 import { deriveAnnotationDirectives } from './annotations';
+import { deriveTacticalDirectives } from './tacticalAnnotations';
 import {
   DEFAULT_DIRECTOR_SETTINGS,
   DIRECTOR_SCHEMA_VERSION,
@@ -110,6 +111,7 @@ function emptyPlan(settings: DirectorSettings, analysis: GameAnalysis): Cinemati
     moveTreatmentPlan: [],
     cameraDirectives: [],
     annotationDirectives: [],
+    tacticalDirectives: [],
     transitionDirectives: [],
     finalPositionIsTerminal: isTerminalPosition(analysis),
     settings
@@ -144,6 +146,7 @@ export function buildCinematicPlan(
 
   const cameraDirectives = deriveCameraDirectives(game, analysis, understanding, story, settings);
   const annotationDirectives = deriveAnnotationDirectives(game, analysis, understanding, story);
+  const tacticalDirectives = deriveTacticalDirectives(game, analysis, understanding, story, settings);
   const transitionDirectives = buildTransitionDirectives(story.beats, settings);
 
   return {
@@ -151,6 +154,7 @@ export function buildCinematicPlan(
     moveTreatmentPlan,
     cameraDirectives,
     annotationDirectives,
+    tacticalDirectives,
     transitionDirectives,
     finalPositionIsTerminal: isTerminalPosition(analysis),
     settings

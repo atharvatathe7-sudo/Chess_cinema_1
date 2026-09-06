@@ -1,4 +1,6 @@
-import type { BeatRole, NoConflictReason, StoryArchetype } from '../story/types';
+import type { PieceId } from '../pgn/types';
+import type { TacticalMotif } from '../understanding/types';
+import type { BeatRole, CausalFact, NoConflictReason, StoryArchetype } from '../story/types';
 
 /**
  * Phase 2.4 — Cinematic Director data model.
@@ -100,6 +102,84 @@ export interface AnnotationDirective {
 }
 
 // ============================================================
+// Tactical annotations (Phase 18C)
+// ============================================================
+
+/**
+ * Phase 18C — the visual EXPLANATION channel: annotations that answer "why
+ * does this move work", as opposed to AnnotationDirective's channel, which
+ * marks WHICH plies the story selected.
+ *
+ * Deliberately a SEPARATE directive list rather than more
+ * AnnotationDirectiveKind values, for one concrete reason: that union is an
+ * exhaustive Record key AND the subject of two exhaustive switches in
+ * state/moments.ts that produce caption display copy, plus the terminal-hold
+ * gate in export/runExport.ts. Widening it would force this phase to invent
+ * caption text for tactical geometry — narration this layer is explicitly
+ * not allowed to author (see the NO NATURAL LANGUAGE note at the bottom of
+ * this file). Keeping a separate list leaves the Moment/caption layer
+ * provably untouched while still lowering into the SAME AnnotationBeat and
+ * the SAME unmodified renderer (render/drawAnnotations.ts) — a separate
+ * channel, never a parallel rendering system.
+ */
+export type TacticalAnnotationKind =
+  /** Arrow: a verified mechanism motif's attacker -> one of its own verified targets. */
+  | 'mechanism-attack'
+  /** Highlight: the square a verified pin/skewer passes THROUGH (the pinned/skewered piece). */
+  | 'mechanism-line'
+  /** Highlight: the square a verified discovery was revealed by vacating. */
+  | 'mechanism-origin'
+  /** Arrow: a departed defender's own square -> the target whose defence collapsed (DefenderLossRecord). */
+  | 'defender-loss'
+  /** Highlight: a restricted king plus exactly the escape squares that disappeared (KingMobilityRecord). */
+  | 'escape-square-removed'
+  /** Arrow: the refuting move's own destination -> the threat's own target square. */
+  | 'refutation'
+  /** Highlight: a ThreatRecord's own target square. */
+  | 'threat-target'
+  /** Arrow: the from -> to of a reply that a ForcedSequence establishes was forced. */
+  | 'forced-response'
+  /** Highlight: the checked/mated king's own square. */
+  | 'check-marker'
+  /** Arrow: the critical move's own from -> to. The honest fallback when nothing stronger is verified. */
+  | 'critical-move';
+
+/**
+ * Which verified fact this annotation is drawn FROM. Every variant names a
+ * record that already exists upstream — this layer never asserts geometry
+ * of its own.
+ *
+ * Note the absence of 'deflection'/'overload': TacticalMotif carries both
+ * labels, but understanding/motifs.ts has no detector for either (only
+ * findForks/findLineMotifs/findDiscoveries exist), so no instance — and
+ * therefore no geometry — can ever be produced for them. See
+ * tacticalAnnotations.ts.
+ */
+export type TacticalEvidenceRef =
+  | { readonly kind: 'motif'; readonly motif: TacticalMotif; readonly motifId: string }
+  | { readonly kind: 'causal-fact'; readonly fact: CausalFact; readonly ply: number }
+  | { readonly kind: 'threat'; readonly threatId: string }
+  | { readonly kind: 'forced-sequence'; readonly sequenceId: string }
+  | { readonly kind: 'terminal'; readonly ply: number }
+  | { readonly kind: 'move'; readonly ply: number };
+
+export interface TacticalAnnotationDirective {
+  readonly fromPly: number;
+  /** Inclusive. */
+  readonly toPly: number;
+  readonly kind: TacticalAnnotationKind;
+  /** Which beat phase this annotation explains — the same grouping the camera uses (visualRelevance.ts's cameraRoleFor). */
+  readonly role: CameraRole;
+  /** For an arrow kind exactly [from, to]; for a highlight kind one or more squares. Board squares only, never coordinates. */
+  readonly squares: readonly string[];
+  /** The already-assigned identity of the piece this annotation is about, when one specific piece owns it. Never re-derived here. */
+  readonly pieceId?: PieceId;
+  /** Lower wins. Fixed per kind (TACTICAL_PRIORITY) — a stable ranking, never a per-game judgement. */
+  readonly priority: number;
+  readonly evidenceRef: TacticalEvidenceRef;
+}
+
+// ============================================================
 // Settings
 // ============================================================
 
@@ -147,6 +227,14 @@ export interface DirectorSettings {
    * clip windowing does not touch.
    */
   readonly maxClipSpanPlies: number;
+  /**
+   * Phase 18C — hard ceiling on how many tactical annotations may be active
+   * on any single ply, applied after priority ordering and redundancy
+   * suppression (see tacticalAnnotations.ts). Deliberately small: the
+   * viewer should follow one tactical idea per moment, so a strong pair
+   * beats a correct-but-unreadable stack of arrows.
+   */
+  readonly maxTacticalAnnotationsPerPly: number;
 }
 
 export const DEFAULT_DIRECTOR_SETTINGS: DirectorSettings = {
@@ -159,7 +247,8 @@ export const DEFAULT_DIRECTOR_SETTINGS: DirectorSettings = {
   minVisibleContextSquares: 1.5,
   maxZoom: 2.2,
   preClimaxRampMs: 1200,
-  maxClipSpanPlies: 40
+  maxClipSpanPlies: 40,
+  maxTacticalAnnotationsPerPly: 2
 };
 
 // ============================================================
@@ -211,6 +300,14 @@ export interface CinematicPlan {
   readonly cameraDirectives: readonly CameraDirective[];
   /** Ascending by fromPly, then a fixed kind order. */
   readonly annotationDirectives: readonly AnnotationDirective[];
+  /**
+   * Phase 18C — the tactical EXPLANATION channel, ascending by fromPly then
+   * priority. Empty whenever StoryPlan selected no central conflict, and
+   * never populated from anything but already-verified upstream evidence.
+   * Kept separate from annotationDirectives so the Moment/caption layer
+   * (state/moments.ts) is untouched by it — see TacticalAnnotationDirective.
+   */
+  readonly tacticalDirectives: readonly TacticalAnnotationDirective[];
   /** Ascending by beforePly. */
   readonly transitionDirectives: readonly TransitionDirective[];
   /**

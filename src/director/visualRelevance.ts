@@ -1,6 +1,6 @@
 import type { GameAnalysis, PlyAnalysis } from '../analysis/types';
 import type { GameRecord } from '../pgn/types';
-import type { GameUnderstanding, TacticalMotif, TurningPoint } from '../understanding/types';
+import type { GameUnderstanding, TacticalMotif, TacticalMotifInstance, TurningPoint } from '../understanding/types';
 import { detectDefenderLoss } from '../understanding/defenders';
 import { parseFenPlacement } from '../render/fen';
 import type { BeatRole, PayoffTerminus, StoryBeat, StoryPlan } from '../story/types';
@@ -91,8 +91,8 @@ function moveFallbackRegion(game: GameRecord, plies: readonly number[]): VisualR
   return { primarySquares: moveSquaresFor(game, plies), secondarySquares: [], source: { kind: 'move', plies } };
 }
 
-/** The relevant king's square right after `ply`, for `color`, from the real board — never guessed. */
-function kingSquareAfter(analysis: GameAnalysis, ply: number, color: 'w' | 'b'): string | null {
+/** The relevant king's square right after `ply`, for `color`, from the real board — never guessed. Shared with tacticalAnnotations.ts so both layers read the same board. */
+export function kingSquareAfter(analysis: GameAnalysis, ply: number, color: 'w' | 'b'): string | null {
   const plyRecord = analysis.plies.find((p) => p.ply === ply);
   if (!plyRecord) return null;
   const board = parseFenPlacement(plyRecord.fenAfter);
@@ -143,10 +143,14 @@ function defenderLossRegion(ply: number, analysis: GameAnalysis): VisualRegion |
  * here (Part 7 — "do not allow an unverified motif to override a verified
  * causal fact").
  */
-function verifiedMotifRegion(tp: TurningPoint, understanding: GameUnderstanding): VisualRegion | null {
+export function verifiedMechanismMotif(tp: TurningPoint, understanding: GameUnderstanding): TacticalMotifInstance | null {
   const cc = tp.causeConsequence;
   if (!cc.mechanismVerified || cc.mechanism === null || !cc.mechanismMotifId) return null;
-  const motif = understanding.motifs.find((m) => m.id === cc.mechanismMotifId);
+  return understanding.motifs.find((m) => m.id === cc.mechanismMotifId) ?? null;
+}
+
+function verifiedMotifRegion(tp: TurningPoint, understanding: GameUnderstanding): VisualRegion | null {
+  const motif = verifiedMechanismMotif(tp, understanding);
   if (!motif) return null;
   const secondary = motif.squares.throughSquare ? [motif.squares.throughSquare] : [];
   return {

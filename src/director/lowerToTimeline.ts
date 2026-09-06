@@ -3,7 +3,14 @@ import type { StoryArchetype, StoryPlan } from '../story/types';
 import type { Annotation, AnnotationBeat, CameraKeyframe, CameraPlan, MoveBeat, Scene, Timeline } from '../timeline/types';
 import { boundsOfSquares } from '../render/coords';
 import { deriveClipWindow } from './clipWindow';
-import type { AnnotationDirective, AnnotationDirectiveKind, CameraDirective, CinematicPlan } from './types';
+import type {
+  AnnotationDirective,
+  AnnotationDirectiveKind,
+  CameraDirective,
+  CinematicPlan,
+  TacticalAnnotationDirective,
+  TacticalAnnotationKind
+} from './types';
 
 /**
  * CinematicPlan + GameRecord -> Timeline, the existing renderer-facing
@@ -108,6 +115,64 @@ function buildAnnotationBeats(
         type: ANNOTATION_STYLE[directive.kind].type,
         squares: [...directive.squares],
         color: colorFor(directive)
+      },
+      atMs,
+      untilMs: endAtMs + endDurationMs
+    });
+  }
+  return beats;
+}
+
+/**
+ * Phase 18C — how each tactical explanation kind is drawn. Arrow kinds take
+ * exactly the directive's own [from, to]; every other kind fills its own
+ * squares. Both are the SAME Annotation shapes render/drawAnnotations.ts
+ * already draws — this phase adds no renderer capability.
+ */
+const TACTICAL_STYLE: Readonly<Record<TacticalAnnotationKind, { type: Annotation['type']; color: string }>> = {
+  'mechanism-attack': { type: 'arrow', color: '#e94560' },
+  'mechanism-line': { type: 'highlight', color: '#e94560' },
+  'mechanism-origin': { type: 'highlight', color: '#f4a300' },
+  'defender-loss': { type: 'arrow', color: '#ff6b35' },
+  'escape-square-removed': { type: 'highlight', color: '#7b2ff7' },
+  refutation: { type: 'arrow', color: '#f4a300' },
+  'threat-target': { type: 'highlight', color: '#f4a300' },
+  'forced-response': { type: 'arrow', color: '#00b8a9' },
+  'check-marker': { type: 'highlight', color: '#2ecc71' },
+  'critical-move': { type: 'arrow', color: '#d63447' }
+};
+
+/**
+ * Phase 18C — tactical directives become AnnotationBeats through exactly the
+ * same ply -> time resolution as story annotations, including the same
+ * fail-safe skip: a directive whose plies fall outside the selected clip
+ * window has no MoveBeat to anchor to and is silently omitted, so an
+ * annotation can never point at a move the viewer never sees.
+ */
+function buildTacticalBeats(
+  directives: readonly TacticalAnnotationDirective[],
+  plyAtMs: ReadonlyMap<number, number>,
+  plyDurationMs: ReadonlyMap<number, number>
+): AnnotationBeat[] {
+  const beats: AnnotationBeat[] = [];
+  for (const directive of directives) {
+    const atMs = plyAtMs.get(directive.fromPly);
+    const endAtMs = plyAtMs.get(directive.toPly);
+    const endDurationMs = plyDurationMs.get(directive.toPly);
+    if (atMs === undefined || endAtMs === undefined || endDurationMs === undefined) continue;
+
+    const style = TACTICAL_STYLE[directive.kind];
+    // An arrow needs two distinct endpoints; drawAnnotations reads exactly
+    // squares[0] and squares[1] and silently draws nothing otherwise, so a
+    // malformed pair is dropped here rather than emitted as an invisible beat.
+    if (style.type === 'arrow' && directive.squares.length < 2) continue;
+
+    beats.push({
+      kind: 'annotation',
+      annotation: {
+        type: style.type,
+        squares: [...directive.squares],
+        color: style.color
       },
       atMs,
       untilMs: endAtMs + endDurationMs
@@ -331,6 +396,7 @@ export function lowerToTimeline(game: GameRecord, plan: CinematicPlan, story: St
 
   const { beats: moveBeats, plyAtMs, plyDurationMs, totalMs } = buildMoveBeats(consideredMoves, plan);
   const annotationBeats = buildAnnotationBeats(plan.annotationDirectives, plyAtMs, plyDurationMs);
+  const tacticalBeats = buildTacticalBeats(plan.tacticalDirectives, plyAtMs, plyDurationMs);
   // Phase 13B — the terminal ply is the game's own last move (a
   // checkmate/stalemate delivery is definitionally the last move ever
   // played). Phase 18A — once windowed, that move may fall outside this
@@ -350,7 +416,7 @@ export function lowerToTimeline(game: GameRecord, plan: CinematicPlan, story: St
     id: SCENE_ID,
     startPositionFen: scenePosition.fen,
     startPly: scenePositionIndex,
-    beats: [...moveBeats, ...annotationBeats],
+    beats: [...moveBeats, ...annotationBeats, ...tacticalBeats],
     cameraPlan,
     durationMs: totalMs
   };

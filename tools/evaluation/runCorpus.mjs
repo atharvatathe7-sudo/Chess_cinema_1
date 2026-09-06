@@ -361,6 +361,24 @@ async function capture(page, pgnText) {
           acc[d.kind] = (acc[d.kind] ?? 0) + 1;
           return acc;
         }, {}),
+        // Phase 18C — the tactical-explanation channel, captured separately
+        // from annotationDirectives exactly as the plan keeps them separate,
+        // so a corpus diff shows tactical output without disturbing the
+        // caption-bearing annotation rows above.
+        tacticalDirectives: cinematicPlan.tacticalDirectives.map((d) => ({
+          kind: d.kind,
+          role: d.role,
+          fromPly: d.fromPly,
+          toPly: d.toPly,
+          fromSan: san(d.fromPly),
+          squares: d.squares,
+          priority: d.priority,
+          evidence: d.evidenceRef.kind
+        })),
+        tacticalKindCounts: cinematicPlan.tacticalDirectives.reduce((acc, d) => {
+          acc[d.kind] = (acc[d.kind] ?? 0) + 1;
+          return acc;
+        }, {}),
         settings: cinematicPlan.settings
       },
       moments: momentRows,

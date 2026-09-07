@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { PlyAnalysis } from '../analysis/types';
 import type { ForcedSequence, TacticalMotifInstance, ThreatRecord } from './types';
 import { motifInstanceKeyFor } from './motifs';
-import { anchoredToMove, isNovelOnPly, isRealized, verifyMechanism, type MechanismInputs } from './mechanismVerification';
+import { anchoredToMove, isNecessary, isNovelOnPly, isRealized, verifyMechanism, type MechanismInputs } from './mechanismVerification';
 
 /**
  * Phase 15 (M5) — mechanism verification.
@@ -478,6 +478,446 @@ describe('V3 realization window — sequence-tail fallback (Phase 18F)', () => {
 
     expect(result.mechanism).toBeNull();
     expect(result.verified).toBe(false);
+  });
+});
+
+describe('V3 realization — battery false-positive guard (Phase 18G)', () => {
+  // The real game_10 ply-31 shape: a battery's own `targets` names its own
+  // second FRIENDLY piece (geometry.ts's documented representation), not an
+  // enemy square. White plays Re1 (f1->e1), forming a battery with the rook
+  // already on d1 (attacker=d1, targets=['e1']). Black's OTHER rook then
+  // captures on e1 (Rxe1+) — the opponent capturing the battery's OWN front
+  // piece, not the battery converting a threat. Before this fix, isRealized's
+  // generic "captured" check could not tell the difference and returned
+  // true; the corpus showed this had already produced mechanismVerified:
+  // true for a battery on three real turning points (game_07 ply 54,
+  // game_10 plies 31 and 57), all of them actual material losses for the
+  // mover, not a battery achieving anything.
+  const battery = motif({ motif: 'battery', ply: 31, attacker: 'd1', targets: ['e1'], throughSquare: 'e1' });
+  const trigger = ply({ ply: 31, movePlayedUci: 'f1e1', movePlayedSan: 'Re1' });
+  const opponentCapturesFrontPiece: PlyAnalysis = ply({
+    ply: 32,
+    sideToMove: 'b',
+    movePlayedUci: 'e8e1',
+    movePlayedSan: 'Rxe1+',
+    // e1 is occupied (by the battery's own front rook) going into this reply.
+    fenBefore: '4r1k1/8/8/8/8/8/8/3RR2K w - - 0 1'
+  });
+
+  it('1. battery + opponent captures the friendly front piece: isRealized is false (was true before this fix)', () => {
+    const realized = isRealized(
+      battery,
+      inputs({
+        ply: trigger,
+        allPliesByNumber: new Map([
+          [31, trigger],
+          [32, opponentCapturesFrontPiece]
+        ])
+      })
+    );
+    expect(realized).toBe(false);
+  });
+
+  it('2. the identical capture shape for a non-battery motif with a genuine enemy target still realizes (existing behaviour preserved)', () => {
+    // Same trigger, same reply, same target square — only the motif kind
+    // differs. A pin's target is a real enemy piece, so the capture on e1
+    // genuinely is realization and must remain true.
+    const pin = motif({ motif: 'pin', ply: 31, attacker: 'a1', targets: ['e1'] });
+    const realized = isRealized(
+      pin,
+      inputs({
+        ply: trigger,
+        allPliesByNumber: new Map([
+          [31, trigger],
+          [32, opponentCapturesFrontPiece]
+        ])
+      })
+    );
+    expect(realized).toBe(true);
+  });
+
+  it('3. a battery cannot become mechanismVerified through the captured-target path, even when V1 and V2 both pass', () => {
+    // battery.targets includes 'e1', the trigger move's own destination, so
+    // V1 anchors and V2 is novel (firstSeenPly === ply) — exactly the real
+    // game_10 shape. With no other motif and no independent V4 consequence,
+    // this must now withhold rather than name "battery".
+    const result = verifyMechanism(
+      inputs({
+        ply: trigger,
+        motifsForPly: [battery],
+        allPliesByNumber: new Map([
+          [31, trigger],
+          [32, opponentCapturesFrontPiece]
+        ])
+      })
+    );
+    expect(result.mechanism).toBeNull();
+    expect(result.verified).toBe(false);
+  });
+
+  it('4. existing forced-sequence realization behaviour is unchanged for non-battery motifs, and the battery guard also holds inside a forced sequence', () => {
+    const sequence: ForcedSequence = {
+      id: 'seq-battery-guard',
+      startPly: 31,
+      endPly: 32,
+      plies: [31, 32],
+      forcingReason: 'material-forced-recapture',
+      evidence: { basis: 'chess-rule', sourcePlies: [31, 32], note: 'fixture' }
+    };
+    const seqInputs = inputs({
+      ply: trigger,
+      sequence,
+      allPliesByNumber: new Map([
+        [31, trigger],
+        [32, opponentCapturesFrontPiece]
+      ])
+    });
+
+    // Non-battery: unchanged from pre-existing V3 behaviour.
+    const pin = motif({ motif: 'pin', ply: 31, attacker: 'a1', targets: ['e1'] });
+    expect(isRealized(pin, seqInputs)).toBe(true);
+
+    // Battery: the guard holds even when the capture happens inside a
+    // genuine forced sequence, not just the simple next-ply case.
+    expect(isRealized(battery, seqInputs)).toBe(false);
+  });
+
+  it('5. V1, V2, and V4 are untouched for battery motifs — only the V3 captured-target branch changed', () => {
+    // V1 anchoring: still passes via the existing generic attacker/target
+    // rule (battery.targets includes the trigger move's own destination) —
+    // nothing about this fix touched anchoredToMove.
+    expect(anchoredToMove(battery, trigger.movePlayedUci)).toBe(true);
+    // V2 novelty: still the same firstSeenPly === ply check, untouched.
+    expect(isNovelOnPly(battery)).toBe(true);
+    // V4 necessity: still the same generic threat-set logic, untouched —
+    // if a threat happened to target the battery's own square, V4 would
+    // still fire exactly as it would have before this change (V4 was never
+    // touched by this fix; it structurally never matches real ThreatRecords
+    // for a battery only because real threats never target a friendly
+    // square, which is a fact about the data, not this code path).
+    const necessary = isNecessary(
+      battery,
+      inputs({
+        ply: trigger,
+        threatsCreatedHere: [threat('e1', 31)],
+        materialNetForMover: 300,
+        swingAtConsequence: 0
+      })
+    );
+    expect(necessary).toBe(true);
+  });
+});
+
+describe('V3 realization — destroyed-motif forced-sequence guard (Phase 18I)', () => {
+  // The real game_10 shape: White promotes c8=Q, forming a pin (attacker=c8,
+  // through=e8, target=f8 — queen, black rook, black king all on rank 8).
+  // Black's rook captures the pinning queen one ply later (destroying the
+  // pin), White's OTHER rook recaptures on c8 giving a brand-new, unrelated
+  // check, and the king's escape from THAT check was being wrongly credited
+  // as "realization" of the long-dead pin, purely because it's a member of
+  // the same ForcedSequence and moves off the pin's own target square.
+  const pin = motif({ motif: 'pin', ply: 57, attacker: 'c8', targets: ['f8'], throughSquare: 'e8' });
+  const trigger57 = ply({
+    ply: 57,
+    sideToMove: 'w',
+    movePlayedUci: 'c7c8q',
+    movePlayedSan: 'c8=Q',
+    // The board exactly as it stood the moment the pin was created: White
+    // queen c8, Black rook e8, Black king f8 — nothing between them.
+    fenAfter: '1RQ1rk2/8/8/8/8/8/8/6K1 b - - 0 1'
+  });
+  const pinSequence: ForcedSequence = {
+    id: 'seq-pin-destroyed',
+    startPly: 57,
+    endPly: 60,
+    plies: [57, 58, 59, 60],
+    forcingReason: 'material-forced-recapture',
+    evidence: { basis: 'chess-rule', sourcePlies: [57, 58, 59, 60], note: 'fixture' }
+  };
+
+  it('1. pin destroyed before the credited ply: isRealized is false (the game_10 regression)', () => {
+    const capturesThePinningQueen = ply({
+      ply: 58,
+      sideToMove: 'b',
+      movePlayedUci: 'e8c8',
+      movePlayedSan: 'Rxc8',
+      fenBefore: '1RQ1rk2/8/8/8/8/8/8/6K1 b - - 0 1'
+    });
+    const recapturesWithTheOtherRook = ply({
+      ply: 59,
+      sideToMove: 'w',
+      movePlayedUci: 'b8c8',
+      movePlayedSan: 'Rxc8+',
+      fenBefore: '1Rr2k2/8/8/8/8/8/8/6K1 w - - 0 1'
+    });
+    const kingFleesTheNewCheck = ply({
+      ply: 60,
+      sideToMove: 'b',
+      movePlayedUci: 'f8e7',
+      movePlayedSan: 'Ke7',
+      // c8 now holds a WHITE ROOK — the same colour as the original queen,
+      // but a different piece entirely. A colour-only survival check would
+      // be fooled by this; the fix must compare the actual piece.
+      fenBefore: '2R2k2/8/8/8/8/8/8/6K1 b - - 0 1'
+    });
+
+    const realized = isRealized(
+      pin,
+      inputs({
+        ply: trigger57,
+        sequence: pinSequence,
+        allPliesByNumber: new Map([
+          [57, trigger57],
+          [58, capturesThePinningQueen],
+          [59, recapturesWithTheOtherRook],
+          [60, kingFleesTheNewCheck]
+        ])
+      })
+    );
+
+    expect(realized).toBe(false);
+  });
+
+  it('2. end-to-end: verifyMechanism no longer names "pin" for the destroyed game_10 shape', () => {
+    const capturesThePinningQueen = ply({
+      ply: 58,
+      sideToMove: 'b',
+      movePlayedUci: 'e8c8',
+      fenBefore: '1RQ1rk2/8/8/8/8/8/8/6K1 b - - 0 1'
+    });
+    const recapturesWithTheOtherRook = ply({
+      ply: 59,
+      sideToMove: 'w',
+      movePlayedUci: 'b8c8',
+      fenBefore: '1Rr2k2/8/8/8/8/8/8/6K1 w - - 0 1'
+    });
+    const kingFleesTheNewCheck = ply({
+      ply: 60,
+      sideToMove: 'b',
+      movePlayedUci: 'f8e7',
+      fenBefore: '2R2k2/8/8/8/8/8/8/6K1 b - - 0 1'
+    });
+
+    const result = verifyMechanism(
+      inputs({
+        ply: trigger57,
+        motifsForPly: [pin],
+        sequence: pinSequence,
+        allPliesByNumber: new Map([
+          [57, trigger57],
+          [58, capturesThePinningQueen],
+          [59, recapturesWithTheOtherRook],
+          [60, kingFleesTheNewCheck]
+        ])
+      })
+    );
+
+    expect(result.mechanism).toBeNull();
+    expect(result.verified).toBe(false);
+  });
+
+  it('3. the pin still realizes when the credited ply is the immediate reply and the attacker is untouched (positive control, same geometry)', () => {
+    // Identical starting geometry, but the king flees on the very next ply —
+    // no intervening capture ever touches the queen. This must remain true.
+    const kingFleesImmediately = ply({
+      ply: 58,
+      sideToMove: 'b',
+      movePlayedUci: 'f8e7',
+      fenBefore: '1RQ1rk2/8/8/8/8/8/8/6K1 b - - 0 1'
+    });
+    const immediateSequence: ForcedSequence = {
+      id: 'seq-pin-immediate',
+      startPly: 57,
+      endPly: 58,
+      plies: [57, 58],
+      forcingReason: 'material-forced-recapture',
+      evidence: { basis: 'chess-rule', sourcePlies: [57, 58], note: 'fixture' }
+    };
+
+    const realized = isRealized(
+      pin,
+      inputs({
+        ply: trigger57,
+        sequence: immediateSequence,
+        allPliesByNumber: new Map([
+          [57, trigger57],
+          [58, kingFleesImmediately]
+        ])
+      })
+    );
+
+    expect(realized).toBe(true);
+  });
+
+  // The real game_04 shape: a black pawn advance (g2+) forks White's rook
+  // (f1) and king (h1) while delivering check. White's rook captures the
+  // checking pawn, Black's other rook recaptures, and the king's own
+  // eventual recapture on g2 (moving off h1, one of the fork's own targets)
+  // was being wrongly credited as realizing a fork whose attacking pawn had
+  // been captured two plies earlier.
+  const fork = motif({ motif: 'fork', ply: 56, attacker: 'g2', targets: ['f1', 'h1'] });
+  const trigger56 = ply({
+    ply: 56,
+    sideToMove: 'b',
+    movePlayedUci: 'g3g2',
+    movePlayedSan: 'g2+',
+    // Black pawn just landed on g2, forking Rf1 and Kh1. A white rook sits
+    // on a2 (about to capture the pawn), a black rook on g8 (about to
+    // recapture).
+    fenAfter: '1k4r1/8/8/8/8/8/R5p1/5R1K b - - 0 1'
+  });
+  const forkSequence: ForcedSequence = {
+    id: 'seq-fork-destroyed',
+    startPly: 56,
+    endPly: 59,
+    plies: [56, 57, 58, 59],
+    forcingReason: 'check',
+    evidence: { basis: 'chess-rule', sourcePlies: [56, 57, 58, 59], note: 'fixture' }
+  };
+
+  it('4. fork destroyed before the credited ply: isRealized is false (the game_04 regression)', () => {
+    const whiteRookCapturesTheForkingPawn = ply({
+      ply: 57,
+      sideToMove: 'w',
+      movePlayedUci: 'a2g2',
+      movePlayedSan: 'Rxg2',
+      fenBefore: '1k4r1/8/8/8/8/8/R5p1/5R1K b - - 0 1'
+    });
+    const blackRookRecaptures = ply({
+      ply: 58,
+      sideToMove: 'b',
+      movePlayedUci: 'g8g2',
+      movePlayedSan: 'Rxg2',
+      fenBefore: '1k4r1/8/8/8/8/8/6R1/5R1K w - - 0 1'
+    });
+    const kingRecapturesUnrelatedToTheFork = ply({
+      ply: 59,
+      sideToMove: 'w',
+      movePlayedUci: 'h1g2',
+      movePlayedSan: 'Kxg2',
+      // g2 now holds a BLACK ROOK — same colour as the original forking
+      // pawn, but a different piece. Again, a colour-only check would miss
+      // this; the fix compares the actual piece against the trigger board.
+      fenBefore: '1k6/8/8/8/8/8/6r1/5R1K w - - 0 1'
+    });
+
+    const realized = isRealized(
+      fork,
+      inputs({
+        ply: trigger56,
+        allPliesByNumber: new Map([
+          [56, trigger56],
+          [57, whiteRookCapturesTheForkingPawn],
+          [58, blackRookRecaptures],
+          [59, kingRecapturesUnrelatedToTheFork]
+        ]),
+        sequence: forkSequence
+      })
+    );
+
+    expect(realized).toBe(false);
+  });
+
+  it('5. the fork still realizes immediately when its own attacker delivers check and the king has to move right away (positive control, e.g. game_02/game_12 shape)', () => {
+    const kingMovesImmediatelyOffCheck = ply({
+      ply: 57,
+      sideToMove: 'w',
+      movePlayedUci: 'h1g1',
+      fenBefore: '1k4r1/8/8/8/8/8/R5p1/5R1K b - - 0 1'
+    });
+    const immediateForkSequence: ForcedSequence = {
+      id: 'seq-fork-immediate',
+      startPly: 56,
+      endPly: 57,
+      plies: [56, 57],
+      forcingReason: 'check',
+      evidence: { basis: 'chess-rule', sourcePlies: [56, 57], note: 'fixture' }
+    };
+
+    const realized = isRealized(
+      fork,
+      inputs({
+        ply: trigger56,
+        sequence: immediateForkSequence,
+        allPliesByNumber: new Map([
+          [56, trigger56],
+          [57, kingMovesImmediatelyOffCheck]
+        ])
+      })
+    );
+
+    expect(realized).toBe(true);
+  });
+
+  // A discovery's throughSquare names the square the mover vacated to open
+  // the line — always empty by construction (V1's own comment) — never a
+  // piece. The new geometry-survival check must not mistake that emptiness
+  // for "destroyed," or every discovery realization would incorrectly break.
+  it('6. a discovery still realizes immediately — its own empty throughSquare is correctly excluded from the piece-survival check', () => {
+    const discovery = motif({ motif: 'discovery', ply: 63, attacker: 'e1', targets: ['e5'], throughSquare: 'e3' });
+    const trigger63 = ply({
+      ply: 63,
+      sideToMove: 'w',
+      movePlayedUci: 'e3f2',
+      // White queen e1, Black queen e5, e3 empty (just vacated) — the
+      // discovered attack this move opened.
+      fenAfter: '4k3/8/8/4q3/8/8/8/4Q1K1 b - - 0 1'
+    });
+    const blackQueenFleesImmediately = ply({
+      ply: 64,
+      sideToMove: 'b',
+      movePlayedUci: 'e5d4',
+      fenBefore: '4k3/8/8/4q3/8/8/8/4Q1K1 b - - 0 1'
+    });
+    const discoverySequence: ForcedSequence = {
+      id: 'seq-discovery-immediate',
+      startPly: 63,
+      endPly: 64,
+      plies: [63, 64],
+      forcingReason: 'material-forced-recapture',
+      evidence: { basis: 'chess-rule', sourcePlies: [63, 64], note: 'fixture' }
+    };
+
+    const realized = isRealized(
+      discovery,
+      inputs({
+        ply: trigger63,
+        sequence: discoverySequence,
+        allPliesByNumber: new Map([
+          [63, trigger63],
+          [64, blackQueenFleesImmediately]
+        ])
+      })
+    );
+
+    expect(realized).toBe(true);
+  });
+
+  it('7. battery still cannot realize through its captured-target path — the Phase 18G guard remains intact alongside this new guard', () => {
+    // Unchanged from the Phase 18G fixture: the opponent capturing the
+    // battery's own friendly front piece must still never count, regardless
+    // of this phase's additional geometry-survival check.
+    const battery = motif({ motif: 'battery', ply: 31, attacker: 'd1', targets: ['e1'], throughSquare: 'e1' });
+    const batteryTrigger = ply({ ply: 31, movePlayedUci: 'f1e1', fenAfter: '4r1k1/8/8/8/8/8/8/3RR2K b - - 0 1' });
+    const opponentCapturesFrontPiece = ply({
+      ply: 32,
+      sideToMove: 'b',
+      movePlayedUci: 'e8e1',
+      fenBefore: '4r1k1/8/8/8/8/8/8/3RR2K b - - 0 1'
+    });
+
+    const realized = isRealized(
+      battery,
+      inputs({
+        ply: batteryTrigger,
+        allPliesByNumber: new Map([
+          [31, batteryTrigger],
+          [32, opponentCapturesFrontPiece]
+        ])
+      })
+    );
+
+    expect(realized).toBe(false);
   });
 });
 

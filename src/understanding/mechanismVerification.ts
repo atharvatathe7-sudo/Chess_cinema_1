@@ -1,6 +1,6 @@
 import type { PlyAnalysis } from '../analysis/types';
 import type { CauseConsequenceRecord, Evidence, ForcedSequence, TacticalMotifInstance, ThreatRecord } from './types';
-import { boardFromFen, coordsOf } from './geometry';
+import { boardFromFen, coordsOf, type Board, type BoardSquare } from './geometry';
 
 /**
  * Phase 15 — mechanism verification.
@@ -140,25 +140,84 @@ function realizationWindow(inputs: MechanismInputs): readonly number[] {
  * the motif did anything, and (Phase 18F) neither is a piece leaving a
  * square on realizationWindow's own post-sequence fallback ply, which by
  * definition is not part of any ForcedSequence.
+ *
+ * Phase 18G — the capture check above is only truthful when `targets` names
+ * an ENEMY square: for fork/pin/skewer/discovery it always does (geometry.ts
+ * only ever records an enemy piece there), so "a later move captures on the
+ * target" genuinely means the threat converted. A battery is the one motif
+ * kind where `targets` instead names the battery's own second FRIENDLY
+ * piece (geometry.ts's documented representation — see the module comment
+ * there). Run the same check on a battery and it fires when the OPPONENT
+ * captures the battery's own front piece: the exact inverse of realization,
+ * not evidence of it. This was confirmed as a live false positive in three
+ * real corpus games (a rook trade and a lost newly-promoted queen both
+ * recorded as "battery, verified" for what were actually material losses),
+ * so a battery can never take this branch — not until battery has a real,
+ * separately-resolved downstream enemy target, which is a deferred design
+ * question, not something this guard attempts.
+ *
+ * Phase 18H/18I — sequence membership alone does not establish that the
+ * motif itself compelled a later move. A ForcedSequence's links can be
+ * forced for entirely different, unrelated reasons from link to link
+ * (sequences.ts explicitly allows this): a real corpus case had a pin's own
+ * pinning queen captured two plies before the ply "compelled to move" branch
+ * credited — the king's actual later move was answering a brand-new check
+ * from a different piece, not anything the (already-captured) pin was still
+ * doing. Checking only that SOME piece of the attacker's own colour still
+ * stands on the attacker's square is not enough to catch this: in that exact
+ * game, the pinning queen was captured and then a same-coloured rook
+ * recaptured onto the identical square two plies later, so a colour-only
+ * check would have seen "attacker-coloured piece present" and still been
+ * fooled. `motifGeometrySurvives` instead compares the piece actually
+ * standing on the attacker's (and, for a pin/skewer/battery, the
+ * throughSquare's) square in the credited ply's own fenBefore against the
+ * piece that stood there in inputs.ply.fenAfter — the board exactly as it
+ * was the moment this motif came into existence. Both FENs are already part
+ * of MechanismInputs; nothing new is derived about the position, only two
+ * already-computed snapshots of the same square are compared. When there is
+ * no intervening ply at all (the credited ply is the immediate reply),
+ * laterPly.fenBefore IS inputs.ply.fenAfter, so the comparison is trivially
+ * true and every zero-intervening-ply case Phase 18H found keeps passing
+ * unchanged. Discovery's throughSquare is excluded from this check: it
+ * names the square the mover vacated to open the line (V1's own comment),
+ * which is empty by construction, never a piece.
  */
+function pieceOn(board: Board, square: string): BoardSquare | null {
+  const { r, f } = coordsOf(square);
+  return board[r]?.[f] ?? null;
+}
+
+function samePiece(a: BoardSquare | null, b: BoardSquare | null): boolean {
+  return a !== null && b !== null && a.type === b.type && a.color === b.color;
+}
+
+function motifGeometrySurvives(motif: TacticalMotifInstance, triggerBoard: Board, laterBoard: Board): boolean {
+  if (!samePiece(pieceOn(triggerBoard, motif.squares.attacker), pieceOn(laterBoard, motif.squares.attacker))) return false;
+  if (motif.motif !== 'discovery' && motif.squares.throughSquare) {
+    if (!samePiece(pieceOn(triggerBoard, motif.squares.throughSquare), pieceOn(laterBoard, motif.squares.throughSquare))) return false;
+  }
+  return true;
+}
+
 export function isRealized(motif: TacticalMotifInstance, inputs: MechanismInputs): boolean {
   const targets = new Set(motif.squares.targets);
   const window = realizationWindow(inputs);
   const sequencePlies = inputs.sequence ? new Set(inputs.sequence.plies) : null;
+  const triggerBoard = boardFromFen(inputs.ply.fenAfter);
 
   for (const plyNumber of window) {
     const laterPly = inputs.allPliesByNumber.get(plyNumber);
     if (!laterPly) continue;
     const from = laterPly.movePlayedUci.slice(0, 2);
     const to = laterPly.movePlayedUci.slice(2, 4);
+    const boardBefore = boardFromFen(laterPly.fenBefore);
 
-    if (targets.has(to)) {
-      const boardBefore = boardFromFen(laterPly.fenBefore);
+    if (motif.motif !== 'battery' && targets.has(to)) {
       const { r, f } = coordsOf(to);
       if (boardBefore[r]?.[f]) return true;
     }
     const windowIsForced = sequencePlies !== null && sequencePlies.has(plyNumber);
-    if (windowIsForced && targets.has(from)) return true;
+    if (windowIsForced && targets.has(from) && motifGeometrySurvives(motif, triggerBoard, boardBefore)) return true;
   }
   return false;
 }

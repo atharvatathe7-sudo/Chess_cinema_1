@@ -1,4 +1,5 @@
 import { centralConflict as centralConflictFixture, consequenceChain, noStoryConfidence, unknownOutcome } from '../story/storyFixtures';
+import type { GameOutcome } from '../story/gameOutcome';
 import { motifInstanceKeyFor } from '../understanding/motifs';
 import { describe, expect, it } from 'vitest';
 import { ChessJsEngine } from '../chess/ChessJsEngine';
@@ -17,7 +18,15 @@ import {
   type ThreatRecord,
   type TurningPoint
 } from '../understanding/types';
-import { DEFAULT_STORY_SETTINGS, STORY_SCHEMA_VERSION, type CentralConflict, type StoryBeat, type StoryConfidence, type StoryPlan } from '../story/types';
+import {
+  DEFAULT_STORY_SETTINGS,
+  STORY_SCHEMA_VERSION,
+  type CentralConflict,
+  type ConsequenceChain,
+  type StoryBeat,
+  type StoryConfidence,
+  type StoryPlan
+} from '../story/types';
 import type { MoveBeat, Timeline } from '../timeline/types';
 import { createInitialState, type AppState } from './AppState';
 import { Store } from './store';
@@ -156,7 +165,12 @@ function understandingFixture(overrides: {
 }
 
 /** A StoryPlan with only `beats` populated — Phase 2.7's reason-derivation reads no other field. */
-function storyFixture(overrides: { beats?: readonly StoryBeat[]; confidence?: StoryConfidence; centralConflict?: CentralConflict } = {}): StoryPlan {
+function storyFixture(overrides: {
+  beats?: readonly StoryBeat[];
+  confidence?: StoryConfidence;
+  centralConflict?: CentralConflict;
+  outcome?: GameOutcome;
+} = {}): StoryPlan {
   return {
     schemaVersion: STORY_SCHEMA_VERSION,
     centralConflict: overrides.centralConflict ?? null,
@@ -169,9 +183,21 @@ function storyFixture(overrides: { beats?: readonly StoryBeat[]; confidence?: St
     pieceContributions: [],
     explanationOpportunities: [],
     confidence: overrides.confidence ?? noStoryConfidence(),
-    outcome: unknownOutcome(),
+    outcome: overrides.outcome ?? unknownOutcome(),
     settings: DEFAULT_STORY_SETTINGS
   };
+}
+
+/** Phase 20 — a GameOutcome representing a genuine, engine-confirmed on-board checkmate. */
+function checkmateOutcome(): GameOutcome {
+  return unknownOutcome({
+    result: '1-0',
+    termination: 'checkmate',
+    onBoard: true,
+    finalEvaluation: { kind: 'terminal', result: 'white-wins' },
+    source: 'engine-terminal',
+    confidence: 1
+  });
 }
 
 /**
@@ -185,7 +211,7 @@ function storyFixture(overrides: { beats?: readonly StoryBeat[]; confidence?: St
  * directly. Nothing here loosens the ladder — it states which side of it a
  * given test is about.
  */
-function causalStoryFixture(overrides: { beats?: readonly StoryBeat[] } = {}): StoryPlan {
+function causalStoryFixture(overrides: { beats?: readonly StoryBeat[]; outcome?: GameOutcome } = {}): StoryPlan {
   return storyFixture({
     ...overrides,
     confidence: noStoryConfidence({
@@ -369,10 +395,12 @@ describe('deriveCinematicMoments', () => {
     // archetype-track (3) outranks central-conflict-highlight (2) in KIND_PRIORITY.
     expect(moments[0]!.kind).toBe('archetype-track');
     expect(moments[0]!.label).toBe('King Hunt');
-    expect(moments[0]!.reason).toBe('A forced sequence of checks drove the king across the board, ending in mate.');
+    // Phase 20 — EMPTY_STORY carries an unknown outcome, so the neutral
+    // (non-mate-claiming) king-hunt phrasing is correct here.
+    expect(moments[0]!.reason).toBe('A forced sequence of checks drove the king across the board.');
     // Phase 2.8: the lower-priority Climax narrative is no longer discarded.
     expect(moments[0]!.narratives).toEqual([
-      { label: 'King Hunt', reason: 'A forced sequence of checks drove the king across the board, ending in mate.' },
+      { label: 'King Hunt', reason: 'A forced sequence of checks drove the king across the board.' },
       { label: 'Climax', reason: 'The decisive moment of the game.' }
     ]);
   });
@@ -568,7 +596,11 @@ describe('deriveCinematicMoments', () => {
     });
 
     const ARCHETYPE_CASES: ReadonlyArray<[import('../story/types').StoryArchetype, string]> = [
-      ['king-hunt', 'A forced sequence of checks drove the king across the board, ending in mate.'],
+      // Phase 20 — with an unknown outcome (EMPTY_STORY's own default), a
+      // king-hunt pattern is real geometry but must not claim mate: see the
+      // dedicated 'king-hunt mate-claim gating' block below for the
+      // outcome-dependent cases.
+      ['king-hunt', 'A forced sequence of checks drove the king across the board.'],
       ['pawn-journey', 'A pawn advanced across the board before promoting.'],
       ['stalemate-swindle', 'The side that was behind on material escaped with a stalemate.'],
       ['forced-trap', 'A sacrifice forced a decisive sequence.']
@@ -579,6 +611,84 @@ describe('deriveCinematicMoments', () => {
       const plan = cinematicPlan([directive('archetype-track', 2, 2, { kind: 'archetypeSignal', archetype })]);
       const [moment] = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, EMPTY_UNDERSTANDING, EMPTY_STORY);
       expect(moment!.reason).toBe(expectedReason);
+    });
+
+    /**
+     * Phase 20 — king-hunt's own "…ending in mate" claim must track the
+     * actual game outcome (GameOutcome.onBoard + a genuine, non-draw terminal
+     * result), never the mere existence of the geometric pattern. Real
+     * corpus regression: Phase 19's Game 10 had a full forced king-hunt
+     * pattern but the real game ended by timeout, with no mate ever
+     * delivered on the board — the old unconditional phrasing claimed mate
+     * anyway.
+     */
+    describe('king-hunt mate-claim gating (Phase 20)', () => {
+      it('claims mate when the game genuinely ended in an on-board checkmate', () => {
+        const timeline = timelineFromDurations([600, 600]);
+        const plan = cinematicPlan([directive('archetype-track', 2, 2, { kind: 'archetypeSignal', archetype: 'king-hunt' })]);
+        const story = storyFixture({ outcome: checkmateOutcome() });
+        const [moment] = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, EMPTY_UNDERSTANDING, story);
+        expect(moment!.reason).toBe('A forced sequence of checks drove the king across the board, ending in mate.');
+      });
+
+      it('does not claim mate when the game ended off the board (the Game 10 shape)', () => {
+        const timeline = timelineFromDurations([600, 600]);
+        const plan = cinematicPlan([directive('archetype-track', 2, 2, { kind: 'archetypeSignal', archetype: 'king-hunt' })]);
+        const offBoardOutcome = unknownOutcome({
+          result: '1/2-1/2',
+          termination: 'timeout-vs-insufficient-material',
+          onBoard: false,
+          finalEvaluation: { kind: 'mate', mateIn: 2 },
+          source: 'termination-tag',
+          confidence: 0.9
+        });
+        const story = storyFixture({ outcome: offBoardOutcome });
+        const [moment] = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, EMPTY_UNDERSTANDING, story);
+        expect(moment!.reason).toBe('A forced sequence of checks drove the king across the board.');
+        expect(moment!.reason).not.toContain('mate');
+      });
+
+      it('does not claim mate for a genuine on-board stalemate', () => {
+        const timeline = timelineFromDurations([600, 600]);
+        const plan = cinematicPlan([directive('archetype-track', 2, 2, { kind: 'archetypeSignal', archetype: 'king-hunt' })]);
+        const stalemateOutcome = unknownOutcome({
+          result: '1/2-1/2',
+          termination: 'stalemate',
+          onBoard: true,
+          finalEvaluation: { kind: 'terminal', result: 'draw', drawReason: 'stalemate' },
+          source: 'engine-terminal',
+          confidence: 1
+        });
+        const story = storyFixture({ outcome: stalemateOutcome });
+        const [moment] = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, EMPTY_UNDERSTANDING, story);
+        expect(moment!.reason).toBe('A forced sequence of checks drove the king across the board.');
+        expect(moment!.reason).not.toContain('mate');
+      });
+
+      it('the enabling-sacrifice variant is also gated on the real outcome', () => {
+        const timeline = timelineFromDurations([600, 600]);
+        const plan = cinematicPlan([directive('archetype-track', 2, 2, { kind: 'archetypeSignal', archetype: 'king-hunt' })]);
+        const understanding = understandingFixture();
+        const storyWithSacrifice = (outcome: GameOutcome): StoryPlan => ({
+          ...storyFixture({ outcome }),
+          archetypeSignals: [
+            {
+              archetype: 'king-hunt',
+              plies: [2],
+              beatIds: ['beat-1'],
+              enablingSacrificePly: 2,
+              evidence: emptyEvidence([2])
+            }
+          ]
+        });
+
+        const [mateMoment] = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, understanding, storyWithSacrifice(checkmateOutcome()));
+        expect(mateMoment!.reason).toBe('A sacrifice enabled the mating sequence: the checks that followed drove the king to mate.');
+
+        const [noMateMoment] = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, understanding, storyWithSacrifice(unknownOutcome()));
+        expect(noMateMoment!.reason).toBe('A sacrifice enabled a forced sequence of checks that drove the king across the board.');
+        expect(noMateMoment!.reason).not.toContain('mate');
+      });
     });
 
     it('terminal-result-highlight: checkmate reason', () => {
@@ -655,7 +765,9 @@ describe('deriveCinematicMoments', () => {
         directive('central-conflict-highlight', 40, 40, { kind: 'beat', id: 'beat-climax-40' })
       ]);
       const understanding = understandingFixture({ turningPoints: [turningPoint('tp-1', 40, 'fork', 'forced-mate')] });
-      const story = causalStoryFixture({ beats: [climaxBeat('beat-climax-40', 40, 'tp-1')] });
+      // Phase 20 — the real Evergreen Game genuinely ends in an on-board
+      // checkmate, so its king-hunt narrative is entitled to the mate claim.
+      const story = causalStoryFixture({ beats: [climaxBeat('beat-climax-40', 40, 'tp-1')], outcome: checkmateOutcome() });
       const analysis = analysisEndingWith(46, { kind: 'cp', cp: 0 });
 
       const moments = deriveCinematicMoments(plan, timeline, analysis, understanding, story);
@@ -717,9 +829,10 @@ describe('deriveCinematicMoments', () => {
       expect(moments).toHaveLength(1);
       expect(moments[0]!.fromPly).toBe(1);
       expect(moments[0]!.toPly).toBe(3);
-      expect(moments[0]!.narratives).toEqual([
-        { label: 'King Hunt', reason: 'A forced sequence of checks drove the king across the board, ending in mate.' }
-      ]);
+      // Phase 20 — EMPTY_STORY carries an unknown outcome, so the neutral
+      // (non-mate-claiming) king-hunt phrasing is what both directives
+      // produce here — still an exact duplicate, just not the mate variant.
+      expect(moments[0]!.narratives).toEqual([{ label: 'King Hunt', reason: 'A forced sequence of checks drove the king across the board.' }]);
     });
 
     it('threat-refutation-arrow + central-conflict-highlight overlap preserves both narratives when their label/reason pairs genuinely differ', () => {
@@ -1141,10 +1254,16 @@ describe('deriveCinematicMoments', () => {
       expect(moment!.reason).toBe('The decisive moment — a fork led to a material gain.');
     });
 
-    it('2b. a factual (non-causal) caption is unaffected by payoff corroboration entirely', () => {
-      // When the claim itself is disallowed, the payoff-naming logic must
-      // never be reached at all — only the CLAIM ladder decides that, per the
-      // existing D-3 safety model.
+    it('2b. a factual (non-causal) caption still names the chain payoff truthfully — the CLAIM stays disallowed, the FACT does not go stale (Phase 20)', () => {
+      // Phase 19/20 — this is the exact shape that produced a real,
+      // viewer-visible contradiction: mechanism verified but the causal
+      // claim disallowed (e.g. hasConsequents false at the confidence
+      // layer), a trigger-local resolution of 'unresolved', and a chain
+      // whose own payoff is a genuine checkmate. The OLD behavior asserted
+      // "the position stayed unresolved" here — technically reachable via
+      // the non-causal branch, but false relative to the chain's own
+      // checkmate payoff. The claim ladder must still withhold the CAUSAL
+      // form ("X led to checkmate") — it must not withhold the FACT itself.
       const timeline = timelineFromDurations([600, 600]);
       const plan = cinematicPlan([directive('central-conflict-highlight', 2, 2, { kind: 'beat', id: 'beat-1' })]);
       const understanding = understandingFixture({
@@ -1166,8 +1285,10 @@ describe('deriveCinematicMoments', () => {
         })
       });
       const [moment] = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, understanding, story);
-      expect(moment!.reason).toBe('The decisive moment of the game — a king-safety issue is present, and the position stayed unresolved.');
-      expect(moment!.reason).not.toContain('checkmate');
+      expect(moment!.reason).toBe('The decisive moment of the game — a king-safety issue is present, and the game ended in checkmate.');
+      // The causal connective is still withheld — this remains an
+      // observation ("X is present, and Y"), never a claim ("X led to Y").
+      expect(moment!.reason).not.toContain('led to');
     });
 
     it('3. a no-conflict (abstained) StoryPlan is unaffected by the payoff-phrase logic', () => {
@@ -1178,6 +1299,104 @@ describe('deriveCinematicMoments', () => {
       const story = storyFixture({ confidence: noStoryConfidence({ reasons: ['no-story: no-admissible-candidate'] }) });
       const [moment] = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, EMPTY_UNDERSTANDING, story);
       expect(moment!.reason).toBe('The decisive moment of the game.');
+    });
+  });
+
+  /**
+   * Phase 20 — chainOutcomeFact: the non-causal fallback now names the
+   * selected story's own ConsequenceChain payoff (the strongest available
+   * factual evidence for THIS story) rather than the trigger-local
+   * `resolution`, which can go stale relative to it. Every fixture here uses
+   * mechanism=null and causalClaimAllowed=false, isolating the FACT
+   * selection from the separate mechanism-phrase and claim-ladder concerns
+   * already covered elsewhere in this file.
+   */
+  describe('Phase 20 — chainOutcomeFact: the non-causal caption names the chain payoff truthfully', () => {
+    function nonCausalStory(payoff: ConsequenceChain['payoff']): StoryPlan {
+      return storyFixture({
+        beats: [climaxBeat('beat-1', 2, 'tp-1')],
+        centralConflict: centralConflictFixture('tp-1', 2, { consequenceChain: consequenceChain(2, { payoff, reachesResult: true }) }),
+        confidence: noStoryConfidence({ causalClaimAllowed: false })
+      });
+    }
+
+    function momentFor(resolution: CauseConsequenceRecord['resolution'], payoff: ConsequenceChain['payoff']): CinematicMoment {
+      const timeline = timelineFromDurations([600, 600]);
+      const plan = cinematicPlan([directive('central-conflict-highlight', 2, 2, { kind: 'beat', id: 'beat-1' })]);
+      const understanding = understandingFixture({ turningPoints: [turningPoint('tp-1', 2, null, resolution)] });
+      const [moment] = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, understanding, nonCausalStory(payoff));
+      return moment!;
+    }
+
+    it('A. terminal checkmate payoff: no "unresolved" contradiction (Games 08/12/16 regression)', () => {
+      const moment = momentFor('unresolved', { kind: 'checkmate', atPly: 5 });
+      expect(moment.reason).toBe('The decisive moment of the game — the game ended in checkmate.');
+      expect(moment.reason).not.toContain('unresolved');
+    });
+
+    it('B. stalemate payoff: never described as mate', () => {
+      const moment = momentFor('unresolved', { kind: 'stalemate', atPly: 5 });
+      expect(moment.reason).toBe('The decisive moment of the game — the game ended in a stalemate.');
+      expect(moment.reason).not.toContain('checkmate');
+    });
+
+    it('C. off-board (resignation) payoff: never claims a checkmate that never happened on the board', () => {
+      const moment = momentFor('unresolved', { kind: 'off-board-result', result: '0-1', termination: 'resignation' });
+      expect(moment.reason).toBe('The decisive moment of the game — the game ended by resignation.');
+      expect(moment.reason).not.toContain('checkmate');
+    });
+
+    it('C2. off-board (timeout-vs-insufficient-material) payoff: the Game 10 shape, described truthfully', () => {
+      const moment = momentFor('unresolved', { kind: 'off-board-result', result: '1/2-1/2', termination: 'timeout-vs-insufficient-material' });
+      expect(moment.reason).toBe(
+        'The decisive moment of the game — the game was drawn when the clock ran out against insufficient material.'
+      );
+      expect(moment.reason).not.toContain('checkmate');
+    });
+
+    it('F. material-settled payoff, positive: uses the existing "material was won" fact', () => {
+      const moment = momentFor('unresolved', { kind: 'material-settled', atPly: 5, netMaterialChange: 300 });
+      expect(moment.reason).toBe('The decisive moment of the game — material was won.');
+    });
+
+    it('F2. material-settled payoff, negative: uses the party-neutral "material was lost" fact', () => {
+      const moment = momentFor('unresolved', { kind: 'material-settled', atPly: 5, netMaterialChange: -300 });
+      expect(moment.reason).toBe('The decisive moment of the game — material was lost.');
+    });
+
+    it('G. eval-settled payoff: states a settled evaluation, never a mechanism (mechanism is null throughout this suite)', () => {
+      const moment = momentFor('unresolved', { kind: 'eval-settled', atPly: 5, finalSwingCp: 450 });
+      expect(moment.reason).toBe('The decisive moment of the game — the evaluation moved decisively.');
+      expect(moment.reason).not.toMatch(/fork|pin|skewer|discover|battery|deflection|overload/i);
+    });
+
+    it('I. insufficient chain evidence (payoff itself unresolved): falls back to the trigger-local resolution, conservatively', () => {
+      const moment = momentFor('repelled', { kind: 'unresolved' });
+      expect(moment.reason).toBe('The decisive moment of the game — a threat was removed.');
+    });
+
+    it('I2. no centralConflict at all: falls back to the trigger-local resolution rather than throwing', () => {
+      const timeline = timelineFromDurations([600, 600]);
+      const plan = cinematicPlan([directive('central-conflict-highlight', 2, 2, { kind: 'beat', id: 'beat-1' })]);
+      const understanding = understandingFixture({ turningPoints: [turningPoint('tp-1', 2, null, 'drawn')] });
+      // A beat referencing a real turning point, but centralConflict itself
+      // left null — defensive shape, should never occur in practice since
+      // buildBeats only ever runs once a centralConflict exists.
+      const story = storyFixture({ beats: [climaxBeat('beat-1', 2, 'tp-1')], confidence: noStoryConfidence({ causalClaimAllowed: false }) });
+      const [moment] = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, understanding, story);
+      expect(moment!.reason).toBe('The decisive moment of the game — the game was drawn.');
+    });
+
+    it('H. causalClaimAllowed === true is completely unaffected by this change (existing causal behaviour preserved)', () => {
+      const timeline = timelineFromDurations([600, 600]);
+      const plan = cinematicPlan([directive('central-conflict-highlight', 2, 2, { kind: 'beat', id: 'beat-1' })]);
+      const understanding = understandingFixture({
+        turningPoints: [turningPoint('tp-1', 2, 'fork', 'material-gain', { motifsTriggered: ['motif-1'], movePlayed: { san: 'Nd5', uci: 'c3d5' } })],
+        motifs: [motifInstance('motif-1', 2, 'fork', false, { attacker: 'd5', targets: ['e7', 'c7'] })]
+      });
+      const story = causalStoryFixture({ beats: [climaxBeat('beat-1', 2, 'tp-1')] });
+      const [moment] = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, understanding, story);
+      expect(moment!.reason).toBe('The decisive moment — a fork led to a material gain.');
     });
   });
 });

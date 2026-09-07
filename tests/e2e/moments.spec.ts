@@ -85,9 +85,15 @@ test('Scholar\'s Mate: Next Move overshoot still hides the terminal highlight, b
 
   // Phase 2.7: every moment shows a non-empty, factual reason, and the
   // checkmate moment specifically shows the exact checkmate reason.
+  //
+  // Phase 20 — located by its OWN button's exact label rather than by
+  // `hasText` on the whole <li>: since the Climax caption now also
+  // truthfully names the chain's own checkmate payoff (see below), its
+  // reason text contains the word "Checkmate" too, and a whole-<li> text
+  // filter would match both.
   const listItems = page.locator('#moments-list li');
   await expect(listItems.first().locator('.moment-reason')).not.toBeEmpty();
-  const checkmateItem = page.locator('#moments-list li', { hasText: 'Checkmate' });
+  const checkmateItem = page.locator('#moments-list li').filter({ has: page.locator('button.moment-btn', { hasText: 'Checkmate' }) });
   await expect(checkmateItem.locator('.moment-reason')).toHaveText('The game ended in checkmate.');
 
   // Phase 3: this game's Climax turning point (Black's 3...Nf6) is a real
@@ -97,13 +103,13 @@ test('Scholar\'s Mate: Next Move overshoot still hides the terminal highlight, b
   // repelled" (a defensive claim the record actively contradicts: this
   // move created 4 threats and removed none). Exact text captured from a
   // fresh real-browser run against this exact PGN, not guessed.
-  const climaxItem = page.locator('#moments-list li', { hasText: 'Climax' });
-  // Phase 15 — this move's resolution is now honestly 'unresolved'. It was
-  // previously bucketed as 'repelled' purely from a large negative swing,
-  // with no threat actually removed; Phase 3 then had to paper over that at
-  // caption time with a conservative "decisive swing" phrasing. M3 removes
-  // the mislabel at source, so no workaround phrasing is needed.
-  await expect(climaxItem.locator('.moment-reason')).toHaveText('The decisive moment of the game — the position stayed unresolved.');
+  const climaxItem = page.locator('#moments-list li').filter({ has: page.locator('button.moment-btn', { hasText: 'Climax' }) });
+  // Phase 20 — the non-causal fallback now names the selected story's own
+  // ConsequenceChain payoff (a genuine on-board checkmate here) rather than
+  // the trigger-local resolution, which read 'unresolved' at this move's own
+  // consequence ply even though the SAME chain reaches checkmate three plies
+  // later. Exact text captured from a fresh real-browser run.
+  await expect(climaxItem.locator('.moment-reason')).toHaveText('The decisive moment of the game — the game ended in checkmate.');
 
   // 1. Reproduce the OLD bug with ordinary Next Move, unchanged: Restart,
   // then step past the last move so nextBeatBoundaryMs's fallback lands
@@ -228,7 +234,12 @@ test('Evergreen: a central-conflict/archetype moment is navigable and Export sti
   const secondaryNarratives = forcedTrapItem.locator('.moment-narratives li');
   await expect(secondaryNarratives).toHaveCount(2);
   await expect(secondaryNarratives.nth(0)).toHaveText('King Hunt: A sacrifice enabled the mating sequence: the checks that followed drove the king to mate.');
-  await expect(secondaryNarratives.nth(1)).toHaveText('Climax: The decisive moment of the game — material was won.');
+  // Phase 20 — the non-causal fallback now names the selected story's own
+  // ConsequenceChain payoff (a genuine on-board checkmate) rather than the
+  // trigger-local resolution, which read 'unresolved' at this move's own
+  // consequence ply even though this game's own chain reaches checkmate
+  // several plies later. Exact text captured from a fresh real-browser run.
+  await expect(secondaryNarratives.nth(1)).toHaveText('Climax: The decisive moment of the game — the game ended in checkmate.');
   // The primary button's accessible name is unaffected by the secondary list.
   await expect(forcedTrapButton).toHaveText('Forced Trap — Move 47');
 
@@ -240,7 +251,12 @@ test('Evergreen: a central-conflict/archetype moment is navigable and Export sti
   // A Moment with only one narrative (the terminal Checkmate) renders no
   // secondary list — or "Also true" label — at all — the UI stays exactly
   // as compact as Phase 2.7.
-  const checkmateItem = page.locator('#moments-list li', { hasText: 'Checkmate' });
+  //
+  // Phase 20 — located by its own button's exact label rather than by
+  // `hasText` on the whole <li>: the Climax caption now also truthfully
+  // names the chain's own checkmate payoff, so a whole-<li> text filter for
+  // "Checkmate" would match both items.
+  const checkmateItem = page.locator('#moments-list li').filter({ has: page.locator('button.moment-btn', { hasText: 'Checkmate' }) });
   await expect(checkmateItem.locator('.moment-narratives')).toHaveCount(0);
   await expect(checkmateItem.locator('.moment-narratives-label')).toHaveCount(0);
   await expect(checkmateItem).not.toContainText('Also true');
@@ -307,7 +323,11 @@ test('Stalemate: the terminal Moment shows the exact stalemate reason, distinct 
   await expect(page.locator('#moments-section')).toBeVisible();
   const stalemateButton = page.locator('#moments-list button.moment-btn', { hasText: 'Stalemate' });
   await expect(stalemateButton).toHaveCount(1);
-  const stalemateItem = page.locator('#moments-list li', { hasText: 'Stalemate' });
+  // Phase 20 — located by its own button's exact label rather than by
+  // `hasText` on the whole <li>: the Climax caption now also truthfully
+  // names the chain's own stalemate payoff (see below), so a whole-<li>
+  // text filter for "Stalemate" would match both.
+  const stalemateItem = page.locator('#moments-list li').filter({ has: page.locator('button.moment-btn', { hasText: 'Stalemate' }) });
   await expect(stalemateItem.locator('.moment-reason')).toHaveText('The game ended in a stalemate — a draw by no legal moves.');
 
   // Phase 4: this game's Climax turning point (Black's 6...Kf7, escaping a
@@ -318,11 +338,16 @@ test('Stalemate: the terminal Moment shows the exact stalemate reason, distinct 
   // mechanismInvolvesMovedPiece now correctly suppresses the mechanism
   // clause while leaving the resolution wording intact. Exact text captured
   // from a fresh real-browser run against this exact PGN, not guessed.
-  const climaxItem = page.locator('#moments-list li', { hasText: 'Climax' });
+  const climaxItem = page.locator('#moments-list li').filter({ has: page.locator('button.moment-btn', { hasText: 'Climax' }) });
   // Phase 15 — the story now anchors on the move that forces the stalemate
   // (the ply immediately before it) rather than an earlier swing, and its
   // resolution is reported honestly rather than as a repelled threat.
-  await expect(climaxItem.locator('.moment-reason')).toHaveText('The decisive moment of the game — the position stayed unresolved.');
+  // Phase 20 — the non-causal fallback now names the selected story's own
+  // ConsequenceChain payoff (a genuine on-board stalemate) rather than the
+  // trigger-local resolution, which read 'unresolved' at this move's own
+  // consequence ply even though this game's own chain reaches stalemate a
+  // few plies later. Exact text captured from a fresh real-browser run.
+  await expect(climaxItem.locator('.moment-reason')).toHaveText('The decisive moment of the game — the game ended in a stalemate.');
 
   // Phase 2.9: every Moment in this game (Threat Refutation, Climax,
   // Stalemate) has exactly one narrative — none of them should ever gain

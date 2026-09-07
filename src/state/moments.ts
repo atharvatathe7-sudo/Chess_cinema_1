@@ -1,5 +1,7 @@
 import type { GameAnalysis } from '../analysis/types';
 import type { AnnotationDirective, AnnotationDirectiveKind, CinematicPlan } from '../director/types';
+import type { TerminationKind } from '../pgn/types';
+import type { GameOutcome } from '../story/gameOutcome';
 import type { StoryArchetype, StoryPlan } from '../story/types';
 import type { CauseConsequenceRecord, GameUnderstanding, TacticalMotif, ThreatRecord } from '../understanding/types';
 import type { Timeline } from '../timeline/types';
@@ -162,13 +164,49 @@ const THREAT_REASON: Readonly<Record<ThreatRecord['kind'], string>> = {
   'positional-restriction-threat': "A trapped piece's threat was refuted here."
 };
 
+/**
+ * Phase 20 — 'king-hunt' here is the OUTCOME-NEUTRAL default: a real
+ * geometric king-hunt pattern was detected, stated without asserting how it
+ * ended. The stronger "…ending in mate" claim is a separate, gated sentence
+ * (see KING_HUNT_MATE_REASON below) — see archetypeReason's own comment for
+ * why this split exists.
+ */
 const ARCHETYPE_REASON: Readonly<Record<StoryArchetype, string>> = {
-  'king-hunt': 'A forced sequence of checks drove the king across the board, ending in mate.',
+  'king-hunt': 'A forced sequence of checks drove the king across the board.',
   'pawn-journey': 'A pawn advanced across the board before promoting.',
   'stalemate-swindle': 'The side that was behind on material escaped with a stalemate.',
   'stalemate-blunder': 'The side that was winning stalemated the opponent, throwing away the win.',
   'forced-trap': 'A sacrifice forced a decisive sequence.'
 };
+
+/**
+ * Phase 20 — the stronger king-hunt sentences, only ever returned once
+ * `reachedOnBoardCheckmate` confirms the real game actually ended in a
+ * genuine on-board checkmate. Before this phase, the mate claim was
+ * unconditional — asserted purely because the geometric king-hunt PATTERN
+ * existed, regardless of whether the real game ever delivered mate. Real
+ * corpus case (Phase 19, Game 10): a full forced king hunt was detected and
+ * captioned "…ending in mate" for a game that actually ended by timeout,
+ * with no mate ever delivered on the board (`GameOutcome.onBoard: false`).
+ */
+const KING_HUNT_MATE_REASON = 'A forced sequence of checks drove the king across the board, ending in mate.';
+const KING_HUNT_SACRIFICE_REASON = 'A sacrifice enabled a forced sequence of checks that drove the king across the board.';
+const KING_HUNT_SACRIFICE_MATE_REASON = 'A sacrifice enabled the mating sequence: the checks that followed drove the king to mate.';
+
+/**
+ * Phase 20 — true only when the real game's own final position is a
+ * genuine, on-board checkmate: the engine actually saw it
+ * (`GameOutcome.onBoard`), and the terminal result is not a draw (which
+ * would be stalemate, not mate). Deliberately reads `GameOutcome` — the
+ * whole-game fact — rather than the selected story's own ConsequenceChain
+ * payoff: an archetype signal's own plies are not guaranteed to align with
+ * the central conflict's chain (a king-hunt can be a purely SUPPORTING
+ * archetype, as in the Game 10 case above), so the chain's payoff is not a
+ * safe stand-in for "did this actual game end in mate".
+ */
+function reachedOnBoardCheckmate(outcome: GameOutcome): boolean {
+  return outcome.onBoard && outcome.finalEvaluation.kind === 'terminal' && outcome.finalEvaluation.result !== 'draw';
+}
 
 const MECHANISM_PHRASE: Readonly<Record<TacticalMotif | 'king-safety' | 'positional', string>> = {
   fork: 'a fork',
@@ -273,6 +311,99 @@ const RESOLUTION_FACT: Readonly<Record<CauseConsequenceRecord['resolution'], str
 };
 
 /**
+ * Phase 20 — the material-loss counterpart to RESOLUTION_FACT['material-gain'].
+ * Not part of that table because it is not keyed by a `resolution` value —
+ * it exists to answer `chainOutcomeFact`'s own material-settled case below,
+ * which reads the chain's own signed netMaterialChange rather than the
+ * trigger-local resolution enum. Same party-neutral phrasing convention as
+ * every other entry in this file (nothing here says "White" or "Black").
+ */
+const MATERIAL_LOSS_FACT = 'material was lost';
+
+/**
+ * Phase 20 — safe, factual descriptions of an off-board ending, keyed by the
+ * PGN's own TerminationKind. Deliberately excludes 'checkmate' and
+ * 'stalemate': those describe an on-board result and never legitimately
+ * pair with PayoffTerminus's own 'off-board-result' kind (see
+ * consequenceChain.ts's payoffFor — that kind is only ever constructed when
+ * the final position is NOT a genuine terminal position), so leaving them
+ * unmapped means an inconsistent upstream fact falls through to the
+ * conservative OFF_BOARD_FALLBACK_FACT rather than silently claiming a
+ * checkmate that never happened. 'unknown'/'absent' are likewise excluded:
+ * consequenceChain.ts's own payoffFor never constructs an off-board-result
+ * payoff for either, so they would never legitimately reach this map, and
+ * omitting them means an unexpected one still degrades safely.
+ */
+const OFF_BOARD_FACT: Partial<Record<TerminationKind, string>> = {
+  resignation: 'the game ended by resignation',
+  timeout: 'the game ended when the clock ran out',
+  'timeout-vs-insufficient-material': 'the game was drawn when the clock ran out against insufficient material',
+  'insufficient-material': 'the game was drawn due to insufficient material',
+  agreement: 'the game ended in an agreed draw',
+  repetition: 'the game was drawn by repetition',
+  'fifty-move': 'the game was drawn by the fifty-move rule'
+};
+const OFF_BOARD_FALLBACK_FACT = 'the game ended away from the board';
+
+/**
+ * Phase 20 — the non-causal fallback's own factual anchor, replacing a
+ * direct `RESOLUTION_FACT[causeConsequence.resolution]` lookup.
+ *
+ * The problem this fixes: `causeConsequence.resolution` is a TRIGGER-LOCAL
+ * fact, measured only at the trigger's own consequence ply (exactly the
+ * caveat causalConsequencePhrase's own comment above already documents for
+ * the causal branch). A trigger whose payoff lands several plies later — any
+ * mate not delivered by the losing move itself — reads 'unresolved' there
+ * even once the SAME selected story's own ConsequenceChain has, on evidence,
+ * walked all the way to a checkmate, a stalemate, or a settled material or
+ * evaluation swing. The causal branch already had a fix for this
+ * (causalConsequencePhrase falls back to the chain's own payoff); the
+ * non-causal branch — reached far more often, since most turning points
+ * never verify a mechanism — never did, and produced real, viewer-visible
+ * contradictions: "the position stayed unresolved" captioned directly
+ * against a "the game ended in checkmate" moment moments later (Phase 19,
+ * Games 08/12/16), and (via the sibling king-hunt archetype bug fixed
+ * separately below) an "…ending in mate" claim on a game that ended by
+ * timeout with no mate ever delivered (Phase 19, Game 10).
+ *
+ * This makes no causal claim of its own — it is the exact same kind of bare
+ * observation RESOLUTION_FACT already is, never reached through the "X led
+ * to Y" connective — it only changes WHICH fact anchors the observation:
+ * the chain's own resolved PayoffTerminus when it says something more
+ * specific than 'unresolved', falling through to the trigger-local
+ * resolution only when the chain itself has nothing stronger to offer.
+ * PayoffTerminus's own kinds are already exactly the priority ladder Phase
+ * 20 asked for: checkmate/stalemate is the actual on-board terminal outcome
+ * (payoffFor in consequenceChain.ts only ever assigns either when the chain
+ * reaches the game's own last ply AND that position is genuinely terminal);
+ * material-settled/eval-settled are the chain's own verified settlement,
+ * already floor-gated there so every instance reached here is decisive by
+ * construction; off-board-result names the PGN's own recorded termination
+ * truthfully, never as a chess result; and 'unresolved' is the one case with
+ * nothing more specific to add, where the trigger-local resolution remains
+ * the best available fact.
+ */
+function chainOutcomeFact(story: StoryPlan, resolution: CauseConsequenceRecord['resolution']): string {
+  const payoff = story.centralConflict?.consequenceChain.payoff;
+  if (!payoff) return RESOLUTION_FACT[resolution];
+
+  switch (payoff.kind) {
+    case 'checkmate':
+      return 'the game ended in checkmate';
+    case 'stalemate':
+      return 'the game ended in a stalemate';
+    case 'material-settled':
+      return payoff.netMaterialChange >= 0 ? RESOLUTION_FACT['material-gain'] : MATERIAL_LOSS_FACT;
+    case 'eval-settled':
+      return RESOLUTION_FACT['decisive-advantage'];
+    case 'off-board-result':
+      return OFF_BOARD_FACT[payoff.termination] ?? OFF_BOARD_FALLBACK_FACT;
+    case 'unresolved':
+      return RESOLUTION_FACT[resolution];
+  }
+}
+
+/**
  * central-conflict-highlight is only ever produced from the StoryPlan's
  * own climax beat, and story/beats.ts always populates a climax beat's
  * evidenceRefs.turningPointId — so this lookup is expected to resolve for
@@ -334,7 +465,7 @@ function centralConflictReason(directive: AnnotationDirective, story: StoryPlan,
     return `The decisive moment — ${MECHANISM_PHRASE[mechanism]} led to ${consequence}.`;
   }
 
-  const fact = RESOLUTION_FACT[causeConsequence.resolution];
+  const fact = chainOutcomeFact(story, causeConsequence.resolution);
   if (mechanism === null) return `The decisive moment of the game — ${fact}.`;
   return `The decisive moment of the game — ${MECHANISM_PHRASE[mechanism]} is present, and ${fact}.`;
 }
@@ -378,9 +509,11 @@ function archetypeReason(directive: AnnotationDirective, story: StoryPlan): stri
     const signal = story.archetypeSignals.find(
       (s) => s.archetype === 'king-hunt' && s.enablingSacrificePly !== undefined && s.plies.includes(directive.fromPly)
     );
+    const reachedMate = reachedOnBoardCheckmate(story.outcome);
     if (signal?.enablingSacrificePly !== undefined) {
-      return `A sacrifice enabled the mating sequence: the checks that followed drove the king to mate.`;
+      return reachedMate ? KING_HUNT_SACRIFICE_MATE_REASON : KING_HUNT_SACRIFICE_REASON;
     }
+    return reachedMate ? KING_HUNT_MATE_REASON : ARCHETYPE_REASON['king-hunt'];
   }
 
   return ARCHETYPE_REASON[archetype];

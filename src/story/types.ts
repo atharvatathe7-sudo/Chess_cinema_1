@@ -67,7 +67,17 @@ export type StructuralLinkType =
   /** Phase 15 — a forced mate stood for the same side across this ply. */
   | 'mate-transition-continuity'
   /** Phase 15 — the chain arrived at a genuinely terminal position. */
-  | 'terminal-arrival';
+  | 'terminal-arrival'
+  /**
+   * Phase 22A — an earlier TacticalMotifInstance whose own geometry (attacker/
+   * targets/throughSquare) shares an actual square with the board geometry
+   * already established in the chain (the trigger's own move/motifs, or an
+   * antecedent already accepted this same way). Antecedent-side only: this
+   * never grows the chain forward, and never asserts that the earlier motif
+   * caused anything — see StoryConfidence.causalClaimAllowed for the
+   * (separate, unaffected) gate on causal claims.
+   */
+  | 'tactical-continuity';
 
 /**
  * Phase 16 — WHAT happened in chess terms at a ply, as opposed to how we know

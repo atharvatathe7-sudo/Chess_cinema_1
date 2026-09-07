@@ -1,7 +1,7 @@
 import type { Color } from '../chess/ChessEngine';
 import type { Evaluation, GameAnalysis, PlyAnalysis } from '../analysis/types';
 import { toComparableCp } from '../analysis/evaluation';
-import type { GameUnderstanding } from '../understanding/types';
+import type { ForcedSequence, GameUnderstanding, TacticalMotifInstance } from '../understanding/types';
 import { boardFromFen, materialBalance } from '../understanding/geometry';
 import { detectDefenderLoss } from '../understanding/defenders';
 import type { GameOutcome } from './gameOutcome';
@@ -262,6 +262,119 @@ export function classifyCausalFacts(
   return CAUSAL_FACT_ORDER.filter((fact) => found.has(fact));
 }
 
+// ============================================================
+// Phase 22A — antecedent-side context expansion
+// ============================================================
+
+/**
+ * Phase 22A — continuous forced-sequence antecedents.
+ *
+ * buildCausalChain's own 'same-sequence' rule only ever pulls in the ONE
+ * ForcedSequence record that literally contains a ply already in the chain.
+ * A real king hunt is frequently recorded as several SEPARATE ForcedSequence
+ * records back to back (sequences.ts gives each check-and-forced-reply its
+ * own record) even though the game never left forced play between them — so
+ * the walk stops after the first one and everything earlier is invisible.
+ *
+ * This recovers that, starting from whatever sequence(s) already touch the
+ * trigger or an antecedent buildCausalChain already found, and merging in
+ * any OTHER ForcedSequence whose own endPly is EXACTLY one less than the
+ * run's current start (or startPly exactly one more than its current end) —
+ * a genuinely unbroken run of forced plies, proven by the data itself, never
+ * a "nearby" or "same forcingReason" guess. The walk stops the instant a
+ * single ply escapes every ForcedSequence, exactly where continuity breaks.
+ */
+function continuousForcedSequenceAntecedents(
+  triggerPly: number,
+  alreadyIncluded: ReadonlySet<number>,
+  sequences: readonly ForcedSequence[]
+): readonly CausalLink[] {
+  const touching = sequences.filter((s) => s.plies.includes(triggerPly) || s.plies.some((p) => alreadyIncluded.has(p)));
+  if (touching.length === 0) return [];
+
+  const merged = new Set<ForcedSequence>(touching);
+  let start = Math.min(...touching.map((s) => s.startPly));
+  let end = Math.max(...touching.map((s) => s.endPly));
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const s of sequences) {
+      if (merged.has(s)) continue;
+      if (s.endPly + 1 === start) {
+        merged.add(s);
+        start = Math.min(start, s.startPly);
+        grew = true;
+      } else if (s.startPly - 1 === end) {
+        merged.add(s);
+        end = Math.max(end, s.endPly);
+        grew = true;
+      }
+    }
+  }
+
+  const links: CausalLink[] = [];
+  const pushed = new Set<number>();
+  for (const s of merged) {
+    for (const p of s.plies) {
+      if (p < triggerPly && !alreadyIncluded.has(p) && !pushed.has(p)) {
+        pushed.add(p);
+        links.push({ ply: p, linkType: 'same-sequence', evidenceId: s.id });
+      }
+    }
+  }
+  return links.sort((a, b) => a.ply - b.ply);
+}
+
+/** Every square a TacticalMotifInstance's own geometry names — its one shared vocabulary with any other motif or move. */
+function squaresOfMotif(motif: TacticalMotifInstance): ReadonlySet<string> {
+  const out = new Set<string>([motif.squares.attacker, ...motif.squares.targets]);
+  if (motif.squares.throughSquare) out.add(motif.squares.throughSquare);
+  return out;
+}
+
+function squaresOfMotifsAt(ply: number, motifsByPly: ReadonlyMap<number, readonly TacticalMotifInstance[]>): ReadonlySet<string> {
+  const out = new Set<string>();
+  for (const m of motifsByPly.get(ply) ?? []) for (const sq of squaresOfMotif(m)) out.add(sq);
+  return out;
+}
+
+/**
+ * Phase 22A — tactical continuity antecedents.
+ *
+ * Walks strictly backward, one ply at a time with no gap allowed, from
+ * immediately before the earliest ply already in the chain (the trigger, or
+ * an antecedent already found above). At each ply, a NOVEL
+ * TacticalMotifInstance (firstSeenPly === ply — the pattern's own birth,
+ * never a persisting motif merely re-observed on a later ply, which would
+ * otherwise let one long-lived battery or pin re-qualify every single ply it
+ * stands) is accepted only when its own squares (attacker/targets/
+ * throughSquare) share an ACTUAL square with the board geometry already
+ * established — never "this ply is close", never a fixed lookback.
+ *
+ * The walk stops the moment one ply contributes no qualifying motif. A real
+ * chess combination stays connected square to square without a quiet gap; a
+ * coincidental reappearance of a common square many moves later (Phase 21's
+ * game_14 caution: 49 motifs in 12 plies, most of them irrelevant back-rank
+ * batteries that persist for the whole game) is exactly what a broken run
+ * excludes — verified against the corpus before this was implemented.
+ */
+function tacticalContinuityAntecedents(
+  startBefore: number,
+  frontierSeed: ReadonlySet<string>,
+  motifsByPly: ReadonlyMap<number, readonly TacticalMotifInstance[]>
+): readonly CausalLink[] {
+  const frontier = new Set(frontierSeed);
+  const links: CausalLink[] = [];
+  for (let ply = startBefore - 1; ply >= 1; ply--) {
+    const novelHere = (motifsByPly.get(ply) ?? []).filter((m) => m.firstSeenPly === ply);
+    const hits = novelHere.filter((m) => [...squaresOfMotif(m)].some((sq) => frontier.has(sq)));
+    if (hits.length === 0) break;
+    for (const m of hits) for (const sq of squaresOfMotif(m)) frontier.add(sq);
+    links.push({ ply, linkType: 'tactical-continuity', evidenceId: hits[0]!.id });
+  }
+  return links;
+}
+
 /**
  * Builds the directional chain for one trigger ply. Pure; every input is
  * already materialized.
@@ -281,6 +394,41 @@ export function buildConsequenceChain(
   for (const link of flat) {
     if (link.ply > triggerPly) consequentsByPly.set(link.ply, link);
   }
+
+  // Phase 22A — antecedent-side context expansion. Both extensions only ever
+  // ADD antecedent links (never touch consequents/payoff/confidence below),
+  // so the story's own selection, tier, and causal-claim gates are provably
+  // unaffected by how much context this chain shows.
+  const baseAntecedentPlies = new Set(antecedents.map((l) => l.ply));
+  const seqLinks = continuousForcedSequenceAntecedents(triggerPly, baseAntecedentPlies, understanding.sequences);
+  const afterSeqPlies = new Set<number>([...baseAntecedentPlies, ...seqLinks.map((l) => l.ply)]);
+
+  const motifsByPly = new Map<number, TacticalMotifInstance[]>();
+  for (const m of understanding.motifs) {
+    const arr = motifsByPly.get(m.ply);
+    if (arr) arr.push(m);
+    else motifsByPly.set(m.ply, [m]);
+  }
+
+  const frontierSeed = new Set<string>(squaresOfMotifsAt(triggerPly, motifsByPly));
+  const triggerMoveUci = pliesByNumber.get(triggerPly)?.movePlayedUci;
+  if (triggerMoveUci) {
+    frontierSeed.add(triggerMoveUci.slice(0, 2));
+    frontierSeed.add(triggerMoveUci.slice(2, 4));
+  }
+  for (const p of afterSeqPlies) {
+    for (const sq of squaresOfMotifsAt(p, motifsByPly)) frontierSeed.add(sq);
+    const moveUci = pliesByNumber.get(p)?.movePlayedUci;
+    if (moveUci) {
+      frontierSeed.add(moveUci.slice(0, 2));
+      frontierSeed.add(moveUci.slice(2, 4));
+    }
+  }
+
+  const startBefore = afterSeqPlies.size > 0 ? Math.min(triggerPly, ...afterSeqPlies) : triggerPly;
+  const motifLinks = tacticalContinuityAntecedents(startBefore, frontierSeed, motifsByPly);
+
+  const enrichedAntecedents = [...antecedents, ...seqLinks, ...motifLinks].sort((a, b) => a.ply - b.ply);
 
   const turningPoint = understanding.turningPoints.find((tp) => tp.ply === triggerPly);
   const cc = turningPoint?.causeConsequence;
@@ -326,7 +474,7 @@ export function buildConsequenceChain(
   return {
     triggerPly,
     ...(triggerFacts !== undefined ? { triggerFacts } : {}),
-    antecedents: antecedents.map(withFacts),
+    antecedents: enrichedAntecedents.map(withFacts),
     consequents: consequents.map(withFacts),
     payoff,
     // Running out of plies is not the same as explaining the result. A chain

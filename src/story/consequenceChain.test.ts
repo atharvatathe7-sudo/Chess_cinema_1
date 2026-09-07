@@ -9,6 +9,7 @@ import {
   forcedSequence,
   plyAnalysis,
   tacticalMotif,
+  threatRecord,
   turningPoint,
   understandingFrom,
   unknownOutcome
@@ -524,5 +525,208 @@ describe('Phase 22A — antecedent context expansion', () => {
     const result = selectCentralConflict(understandingFrom({ plies: [] }), analysisFrom([]), unknownOutcome(), DEFAULT_STORY_SETTINGS);
     expect(result.centralConflict).toBeNull();
     expect(result.noConflictReason).toBe('no-turning-points');
+  });
+});
+
+describe('Phase 23A — single-use unrefuted-threat bridge', () => {
+  /**
+   * The game_13 shape, reproduced structurally: a queen creates a material-
+   * winning threat on b7 (ply 9), the reply doesn't address it (ply 10, the
+   * bridge), and the earliest already-established antecedent (ply 11) is
+   * exactly the move that cashes the threat in. Ply 11-13 are already
+   * antecedents via Phase 22A's own tactical-continuity walk (unchanged from
+   * that phase's own test fixture), so this isolates the ONE new thing
+   * Phase 23A adds: reaching back through the otherwise-unsupported ply 10.
+   */
+  const FORK_11 = tacticalMotif('m-11', 11, 'fork', 'b7', ['a8', 'b8']);
+  const BATTERY_12 = tacticalMotif('m-12', 12, 'battery', 'a8', ['d8']);
+  const FORK_13 = tacticalMotif('m-13', 13, 'fork', 'b7', ['a8', 'd7']);
+  const SKEWER_14 = tacticalMotif('m-14', 14, 'skewer', 'b8', ['b5'], {
+    squares: { attacker: 'b8', targets: ['b5'], throughSquare: 'b7' }
+  });
+
+  function bridgeFixture(overrides: {
+    threats?: readonly ReturnType<typeof threatRecord>[];
+    analysisOverrides?: Partial<Record<number, Partial<PlyAnalysis>>>;
+  }) {
+    const understanding = understandingFrom({
+      plies: [],
+      motifs: [FORK_11, BATTERY_12, FORK_13, SKEWER_14],
+      threats: overrides.threats ?? [],
+      turningPoints: [turningPoint(14, 'decisive-swing', causeConsequence(14, { mechanism: null, mechanismVerified: false }), 400)]
+    });
+    const base: Record<number, { movePlayedUci: string }> = {
+      9: { movePlayedUci: 'd1b3' },
+      10: { movePlayedUci: 'g8f6' },
+      11: { movePlayedUci: 'b3b7' },
+      12: { movePlayedUci: 'b8d7' },
+      13: { movePlayedUci: 'd7b5' },
+      14: { movePlayedUci: 'a8b8' }
+    };
+    const analysis = analysisFrom(
+      Object.entries(base).map(([n, spec]) =>
+        plyAnalysis(Number(n), { fenBefore: FEN, ...spec, ...(overrides.analysisOverrides?.[Number(n)] ?? {}) })
+      )
+    );
+    return { understanding, analysis };
+  }
+
+  it('1-5. positive: unrefuted threat survives the one quiet ply and is realized by the existing antecedent boundary', () => {
+    const threat = threatRecord('threat-9-0', 9, 'w', 'material-winning-threat', 'b7', { targetPiece: 'p', netMaterialIfExecuted: 100 });
+    const { understanding, analysis } = bridgeFixture({ threats: [threat] });
+
+    const chain = buildConsequenceChain(14, understanding, analysis, unknownOutcome());
+
+    expect(chain.antecedents.map((l) => l.ply)).toEqual([9, 10, 11, 12, 13]);
+    const bridge = chain.antecedents.filter((l) => l.linkType === 'unrefuted-threat-bridge');
+    expect(bridge.map((l) => l.ply)).toEqual([9, 10]);
+    expect(bridge.every((l) => l.evidenceId === 'threat-9-0')).toBe(true);
+  });
+
+  it('6. negative: threat refuted on the quiet ply itself blocks the bridge', () => {
+    const threat = threatRecord('threat-9-0', 9, 'w', 'material-winning-threat', 'b7', {
+      targetPiece: 'p',
+      netMaterialIfExecuted: 100,
+      refutedBy: { ply: 10, moveUci: 'g8f6' }
+    });
+    const { understanding, analysis } = bridgeFixture({ threats: [threat] });
+
+    const chain = buildConsequenceChain(14, understanding, analysis, unknownOutcome());
+
+    expect(chain.antecedents.map((l) => l.ply)).toEqual([11, 12, 13]);
+    expect(chain.antecedents.some((l) => l.linkType === 'unrefuted-threat-bridge')).toBe(false);
+  });
+
+  it('7. negative: the boundary move does not realize the threat (different destination square) blocks the bridge', () => {
+    const threat = threatRecord('threat-9-0', 9, 'w', 'material-winning-threat', 'b7', { targetPiece: 'p', netMaterialIfExecuted: 100 });
+    const { understanding, analysis } = bridgeFixture({
+      threats: [threat],
+      analysisOverrides: { 11: { movePlayedUci: 'b3c4' } }
+    });
+
+    const chain = buildConsequenceChain(14, understanding, analysis, unknownOutcome());
+
+    expect(chain.antecedents.map((l) => l.ply)).toEqual([11, 12, 13]);
+    expect(chain.antecedents.some((l) => l.linkType === 'unrefuted-threat-bridge')).toBe(false);
+  });
+
+  it('8. negative: threat/target mismatch (wrong target square) blocks the bridge', () => {
+    const threat = threatRecord('threat-9-0', 9, 'w', 'material-winning-threat', 'c6', { targetPiece: 'p', netMaterialIfExecuted: 100 });
+    const { understanding, analysis } = bridgeFixture({ threats: [threat] });
+
+    const chain = buildConsequenceChain(14, understanding, analysis, unknownOutcome());
+
+    expect(chain.antecedents.map((l) => l.ply)).toEqual([11, 12, 13]);
+    expect(chain.antecedents.some((l) => l.linkType === 'unrefuted-threat-bridge')).toBe(false);
+  });
+
+  it('9. negative: square overlap alone (no ThreatRecord at all) never fires the bridge', () => {
+    const { understanding, analysis } = bridgeFixture({ threats: [] });
+
+    const chain = buildConsequenceChain(14, understanding, analysis, unknownOutcome());
+
+    // Phase 22A's own tactical-continuity walk still applies (unchanged),
+    // but nothing reaches ply 9 or 10 without an actual ThreatRecord.
+    expect(chain.antecedents.map((l) => l.ply)).toEqual([11, 12, 13]);
+    expect(chain.antecedents.some((l) => l.linkType === 'unrefuted-threat-bridge')).toBe(false);
+  });
+
+  it('10. negative: temporal adjacency alone (a move exists, but no threat and no motif) never invents a bridge', () => {
+    // A single forced-sequence antecedent, nothing else nearby at all.
+    const seq = forcedSequence('seq-a', [10, 11], 'check');
+    const understanding = understandingFrom({
+      plies: [],
+      sequences: [seq],
+      turningPoints: [turningPoint(11, 'decisive-swing', causeConsequence(11, { mechanism: null, mechanismVerified: false }), 400)]
+    });
+    const analysis = analysisFrom([
+      plyAnalysis(9, { movePlayedUci: 'e2e4', fenBefore: FEN }),
+      plyAnalysis(10, { movePlayedUci: 'e7e5', fenBefore: FEN }),
+      plyAnalysis(11, { movePlayedUci: 'g1f3', fenBefore: FEN })
+    ]);
+
+    const chain = buildConsequenceChain(11, understanding, analysis, unknownOutcome());
+
+    expect(chain.antecedents.map((l) => l.ply)).toEqual([10]);
+    expect(chain.antecedents.some((l) => l.linkType === 'unrefuted-threat-bridge')).toBe(false);
+  });
+
+  it('11. negative: a threat two plies further back than the one candidate quiet ply is never bridged', () => {
+    // The threat sits at ply 8 — one ply too early for this boundary (11),
+    // which would require crossing TWO quiet plies (9 and 10), not one.
+    const threat = threatRecord('threat-8-0', 8, 'w', 'material-winning-threat', 'b7', { targetPiece: 'p', netMaterialIfExecuted: 100 });
+    const { understanding, analysis } = bridgeFixture({ threats: [threat] });
+
+    const chain = buildConsequenceChain(14, understanding, analysis, unknownOutcome());
+
+    expect(chain.antecedents.map((l) => l.ply)).toEqual([11, 12, 13]);
+    expect(chain.antecedents.some((l) => l.linkType === 'unrefuted-threat-bridge')).toBe(false);
+  });
+
+  it('12. negative: multiple qualifying threats at the same origin ply still produce only ONE bridge (2 links, never more)', () => {
+    const threatA = threatRecord('threat-9-0', 9, 'w', 'material-winning-threat', 'b7', { targetPiece: 'p', netMaterialIfExecuted: 100 });
+    const threatB = threatRecord('threat-9-1', 9, 'w', 'material-winning-threat', 'b7', { targetPiece: 'p', netMaterialIfExecuted: 50 });
+    const { understanding, analysis } = bridgeFixture({ threats: [threatA, threatB] });
+
+    const chain = buildConsequenceChain(14, understanding, analysis, unknownOutcome());
+
+    const bridge = chain.antecedents.filter((l) => l.linkType === 'unrefuted-threat-bridge');
+    expect(bridge).toHaveLength(2);
+    expect(bridge.map((l) => l.ply)).toEqual([9, 10]);
+  });
+
+  it('13. negative: the bridge does not re-arm — nothing before the origin ply is ever considered, even with more qualifying evidence there', () => {
+    // A second, independently-qualifying-looking threat/motif pair sits
+    // immediately before the origin ply (7-8). If the mechanism re-armed,
+    // it would chain straight through to ply 7; it must not.
+    const earlierMotif = tacticalMotif('m-7', 7, 'battery', 'b3', ['e6']);
+    const threat = threatRecord('threat-9-0', 9, 'w', 'material-winning-threat', 'b7', { targetPiece: 'p', netMaterialIfExecuted: 100 });
+    const earlierThreat = threatRecord('threat-7-0', 7, 'w', 'material-winning-threat', 'e6', { targetPiece: 'p', netMaterialIfExecuted: 100 });
+    const understanding = understandingFrom({
+      plies: [],
+      motifs: [earlierMotif, FORK_11, BATTERY_12, FORK_13, SKEWER_14],
+      threats: [threat, earlierThreat],
+      turningPoints: [turningPoint(14, 'decisive-swing', causeConsequence(14, { mechanism: null, mechanismVerified: false }), 400)]
+    });
+    const analysis = analysisFrom([
+      plyAnalysis(7, { movePlayedUci: 'f1b5', fenBefore: FEN }),
+      plyAnalysis(8, { movePlayedUci: 'c6b5' }), // would "realize" threat-7-0 on e6 if it were even checked — it isn't
+      plyAnalysis(9, { movePlayedUci: 'd1b3', fenBefore: FEN }),
+      plyAnalysis(10, { movePlayedUci: 'g8f6', fenBefore: FEN }),
+      plyAnalysis(11, { movePlayedUci: 'b3b7', fenBefore: FEN }),
+      plyAnalysis(12, { movePlayedUci: 'b8d7', fenBefore: FEN }),
+      plyAnalysis(13, { movePlayedUci: 'd7b5', fenBefore: FEN }),
+      plyAnalysis(14, { movePlayedUci: 'a8b8', fenBefore: FEN })
+    ]);
+
+    const chain = buildConsequenceChain(14, understanding, analysis, unknownOutcome());
+
+    expect(chain.antecedents.map((l) => l.ply)).toEqual([9, 10, 11, 12, 13]);
+    expect(chain.antecedents.some((l) => l.ply <= 8)).toBe(false);
+  });
+
+  it('does not touch mechanism, confidence, or causal-claim gating (context evidence ≠ verified causal claim)', () => {
+    const cc = causeConsequence(14, { mechanism: null, mechanismVerified: false, resolution: 'unresolved' });
+    const tp = turningPoint(14, 'decisive-swing', cc, 400);
+    const threat = threatRecord('threat-9-0', 9, 'w', 'material-winning-threat', 'b7', { targetPiece: 'p', netMaterialIfExecuted: 100 });
+    const { analysis } = bridgeFixture({ threats: [threat] });
+    const understandingWithThreat = understandingFrom({
+      plies: [],
+      motifs: [FORK_11, BATTERY_12, FORK_13, SKEWER_14],
+      threats: [threat],
+      turningPoints: [tp]
+    });
+
+    const chain = buildConsequenceChain(14, understandingWithThreat, analysis, unknownOutcome());
+    expect(chain.antecedents.some((l) => l.linkType === 'unrefuted-threat-bridge')).toBe(true);
+
+    const sparse = centralConflictFixture('tp-14', 14, { consequenceChain: consequenceChainFixture(14) });
+    const rich = centralConflictFixture('tp-14', 14, { consequenceChain: consequenceChainFixture(14, { antecedents: chain.antecedents }) });
+    const confSparse = buildConfidence(sparse, understandingWithThreat, undefined);
+    const confRich = buildConfidence(rich, understandingWithThreat, undefined);
+    expect(confRich.causalClaimAllowed).toBe(false);
+    expect(confRich).toEqual(confSparse);
+    expect(cc.mechanism).toBeNull();
+    expect(cc.mechanismVerified).toBe(false);
   });
 });

@@ -77,7 +77,25 @@ export type StructuralLinkType =
    * caused anything — see StoryConfidence.causalClaimAllowed for the
    * (separate, unaffected) gate on causal claims.
    */
-  | 'tactical-continuity';
+  | 'tactical-continuity'
+  /**
+   * Phase 23A — a single, non-repeatable exception to Phase 22A's own
+   * "stop at the first ply with no qualifying evidence" rule. Fires only
+   * when a specific ThreatRecord, created two plies before the chain's
+   * current earliest antecedent, survived the one quiet ply immediately
+   * before that antecedent (ThreatRecord.refutedBy unset — attachRefutations
+   * only ever checks the immediate next ply, so this is exact, not an
+   * absence of evidence) and is realized by the move already sitting at the
+   * boundary. Both the threat's origin ply and the quiet ply it survived
+   * become antecedents this way, in one atomic step; nothing before the
+   * origin is ever considered, and the mechanism cannot fire a second time
+   * for the same chain. Deliberately its own link type rather than
+   * 'tactical-continuity' or 'threat-refutation': Phase 22B's corpus audit
+   * showed that any general square- or proximity-based gap tolerance
+   * cascades uncontrollably, so this evidence class must stay separately
+   * auditable from both.
+   */
+  | 'unrefuted-threat-bridge';
 
 /**
  * Phase 16 — WHAT happened in chess terms at a ply, as opposed to how we know

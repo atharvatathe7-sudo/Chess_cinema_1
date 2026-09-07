@@ -1,8 +1,8 @@
 import type { Color } from '../chess/ChessEngine';
 import type { Evaluation, GameAnalysis, PlyAnalysis } from '../analysis/types';
 import { toComparableCp } from '../analysis/evaluation';
-import type { ForcedSequence, GameUnderstanding, TacticalMotifInstance } from '../understanding/types';
-import { boardFromFen, materialBalance } from '../understanding/geometry';
+import type { ForcedSequence, GameUnderstanding, TacticalMotifInstance, ThreatRecord } from '../understanding/types';
+import { boardFromFen, coordsOf, materialBalance } from '../understanding/geometry';
 import { detectDefenderLoss } from '../understanding/defenders';
 import type { GameOutcome } from './gameOutcome';
 import type { CausalFact, CausalLink, ConsequenceChain, PayoffTerminus } from './types';
@@ -173,6 +173,14 @@ function comparableOrNull(evaluation: Evaluation): number | null {
 function safeMaterial(fen: string): number | null {
   try {
     return materialBalance(boardFromFen(fen));
+  } catch {
+    return null;
+  }
+}
+
+function safeBoard(fen: string) {
+  try {
+    return boardFromFen(fen);
   } catch {
     return null;
   }
@@ -375,6 +383,84 @@ function tacticalContinuityAntecedents(
   return links;
 }
 
+// ============================================================
+// Phase 23A — single-use unrefuted-threat bridge
+// ============================================================
+
+/**
+ * Whether `threat` is the thing `ply` actually did — the one fact that turns
+ * "a threat existed" into "the threat was cashed in". Deliberately NOT
+ * mechanismVerification.ts's isRealized (that one feeds
+ * StoryConfidence.causalClaimAllowed and is scoped to a ForcedSequence's own
+ * realization window): this is a narrower, purely descriptive check for
+ * antecedent context only, built from the same already-computed board data
+ * (boardFromFen/coordsOf), never re-detecting a threat and never touching
+ * confidence.
+ */
+function threatIsRealizedAt(threat: ThreatRecord, ply: PlyAnalysis, understanding: GameUnderstanding): boolean {
+  if (ply.sideToMove !== threat.side) return false;
+  const to = ply.movePlayedUci.slice(2, 4);
+  if (to !== threat.targetSquare) return false;
+
+  if (threat.kind === 'check-threat' || threat.kind === 'mate-threat') {
+    const semantics = understanding.plies.find((p) => p.ply === ply.ply);
+    return semantics?.signals.deliversCheck === true || semantics?.signals.deliversMate === true;
+  }
+
+  // material-winning-threat / positional-restriction-threat: realized only by
+  // an actual capture landing on the threatened square, checked structurally
+  // (the destination was occupied in this move's own fenBefore) exactly the
+  // way mechanismVerification.ts's own V3 checks a capture, without importing
+  // that module. Guarded the same way safeMaterial above guards boardFromFen:
+  // an unparsable FEN must never crash chain construction.
+  const board = safeBoard(ply.fenBefore);
+  if (board === null) return false;
+  const { r, f } = coordsOf(to);
+  return board[r]?.[f] != null;
+}
+
+/**
+ * Phase 23A — a single, non-repeatable exception to Phase 22A's "stop at the
+ * first ply with no qualifying evidence" rule (see StructuralLinkType's own
+ * doc comment for the full rationale). `boundary` is the earliest ply the
+ * chain already reaches after every other antecedent extension has run.
+ *
+ * Fires only for the exact shape Phase 22B's audit found justified: a
+ * ThreatRecord created at boundary-2, unrefuted across boundary-1 (the one
+ * candidate quiet ply), realized by the move already sitting at `boundary`.
+ * Both boundary-2 and boundary-1 become antecedents in one atomic step; nothing
+ * earlier is ever considered, and this function is called at most once per
+ * chain, so there is no way for it to re-arm or chain a second bridge.
+ */
+function unrefutedThreatBridge(
+  boundary: number,
+  understanding: GameUnderstanding,
+  pliesByNumber: ReadonlyMap<number, PlyAnalysis>
+): readonly CausalLink[] {
+  const bridgePly = boundary - 1;
+  const originPly = boundary - 2;
+  if (originPly < 1) return [];
+
+  const boundaryPly = pliesByNumber.get(boundary);
+  if (!boundaryPly) return [];
+
+  for (const threat of understanding.threats) {
+    if (threat.ply !== originPly) continue;
+    // attachRefutations (understanding/threats.ts) only ever checks
+    // threat.ply + 1 — exactly bridgePly here — so an unset refutedBy is
+    // precise proof the threat survived that one specific ply, not merely
+    // an absence of evidence.
+    if (threat.refutedBy) continue;
+    if (!threatIsRealizedAt(threat, boundaryPly, understanding)) continue;
+
+    return [
+      { ply: originPly, linkType: 'unrefuted-threat-bridge', evidenceId: threat.id },
+      { ply: bridgePly, linkType: 'unrefuted-threat-bridge', evidenceId: threat.id }
+    ];
+  }
+  return [];
+}
+
 /**
  * Builds the directional chain for one trigger ply. Pure; every input is
  * already materialized.
@@ -428,7 +514,13 @@ export function buildConsequenceChain(
   const startBefore = afterSeqPlies.size > 0 ? Math.min(triggerPly, ...afterSeqPlies) : triggerPly;
   const motifLinks = tacticalContinuityAntecedents(startBefore, frontierSeed, motifsByPly);
 
-  const enrichedAntecedents = [...antecedents, ...seqLinks, ...motifLinks].sort((a, b) => a.ply - b.ply);
+  // Phase 23A — applied once, after every other antecedent extension has
+  // already run, against whatever boundary they left behind.
+  const afterMotifPlies = new Set<number>([...afterSeqPlies, ...motifLinks.map((l) => l.ply)]);
+  const boundary = afterMotifPlies.size > 0 ? Math.min(triggerPly, ...afterMotifPlies) : triggerPly;
+  const bridgeLinks = unrefutedThreatBridge(boundary, understanding, pliesByNumber);
+
+  const enrichedAntecedents = [...antecedents, ...seqLinks, ...motifLinks, ...bridgeLinks].sort((a, b) => a.ply - b.ply);
 
   const turningPoint = understanding.turningPoints.find((tp) => tp.ply === triggerPly);
   const cc = turningPoint?.causeConsequence;

@@ -275,30 +275,22 @@ export function classifyCausalFacts(
 // ============================================================
 
 /**
- * Phase 22A — continuous forced-sequence antecedents.
- *
- * buildCausalChain's own 'same-sequence' rule only ever pulls in the ONE
- * ForcedSequence record that literally contains a ply already in the chain.
- * A real king hunt is frequently recorded as several SEPARATE ForcedSequence
- * records back to back (sequences.ts gives each check-and-forced-reply its
- * own record) even though the game never left forced play between them — so
- * the walk stops after the first one and everything earlier is invisible.
- *
- * This recovers that, starting from whatever sequence(s) already touch the
- * trigger or an antecedent buildCausalChain already found, and merging in
- * any OTHER ForcedSequence whose own endPly is EXACTLY one less than the
- * run's current start (or startPly exactly one more than its current end) —
- * a genuinely unbroken run of forced plies, proven by the data itself, never
- * a "nearby" or "same forcingReason" guess. The walk stops the instant a
- * single ply escapes every ForcedSequence, exactly where continuity breaks.
+ * Phase 22A — merges ForcedSequence records into one continuous run, starting
+ * from whatever sequence(s) already touch `anchorPly` (the trigger, on either
+ * caller below) or a ply already in `alreadyIncluded`, and growing in BOTH
+ * directions while `endPly + 1 === nextStart` holds — a genuinely unbroken
+ * run of forced plies, proven by the data itself, never a "nearby" or "same
+ * forcingReason" guess. Shared by the antecedent (Phase 22A) and consequent
+ * (Phase 23C) callers immediately below, which differ only in which side of
+ * `anchorPly` each one keeps.
  */
-function continuousForcedSequenceAntecedents(
-  triggerPly: number,
+function mergedAdjacentForcedSequences(
+  anchorPly: number,
   alreadyIncluded: ReadonlySet<number>,
   sequences: readonly ForcedSequence[]
-): readonly CausalLink[] {
-  const touching = sequences.filter((s) => s.plies.includes(triggerPly) || s.plies.some((p) => alreadyIncluded.has(p)));
-  if (touching.length === 0) return [];
+): ReadonlySet<ForcedSequence> {
+  const touching = sequences.filter((s) => s.plies.includes(anchorPly) || s.plies.some((p) => alreadyIncluded.has(p)));
+  if (touching.length === 0) return new Set();
 
   const merged = new Set<ForcedSequence>(touching);
   let start = Math.min(...touching.map((s) => s.startPly));
@@ -319,18 +311,75 @@ function continuousForcedSequenceAntecedents(
       }
     }
   }
+  return merged;
+}
 
+/** Ascending links for every ply of `merged` that `keep` admits and `alreadyIncluded` doesn't already have. */
+function linksFromMergedSequences(
+  merged: ReadonlySet<ForcedSequence>,
+  alreadyIncluded: ReadonlySet<number>,
+  keep: (ply: number) => boolean,
+  linkType: 'same-sequence' | 'adjacent-forced-sequence'
+): readonly CausalLink[] {
   const links: CausalLink[] = [];
   const pushed = new Set<number>();
   for (const s of merged) {
     for (const p of s.plies) {
-      if (p < triggerPly && !alreadyIncluded.has(p) && !pushed.has(p)) {
+      if (keep(p) && !alreadyIncluded.has(p) && !pushed.has(p)) {
         pushed.add(p);
-        links.push({ ply: p, linkType: 'same-sequence', evidenceId: s.id });
+        links.push({ ply: p, linkType, evidenceId: s.id });
       }
     }
   }
   return links.sort((a, b) => a.ply - b.ply);
+}
+
+/**
+ * Phase 22A — continuous forced-sequence antecedents.
+ *
+ * buildCausalChain's own 'same-sequence' rule only ever pulls in the ONE
+ * ForcedSequence record that literally contains a ply already in the chain.
+ * A real king hunt is frequently recorded as several SEPARATE ForcedSequence
+ * records back to back (sequences.ts gives each check-and-forced-reply its
+ * own record) even though the game never left forced play between them — so
+ * the walk stops after the first one and everything earlier is invisible.
+ *
+ * This recovers that by merging in any adjacent ForcedSequence and keeping
+ * only the plies strictly before the trigger. The walk stops the instant a
+ * single ply escapes every ForcedSequence, exactly where continuity breaks.
+ */
+function continuousForcedSequenceAntecedents(
+  triggerPly: number,
+  alreadyIncluded: ReadonlySet<number>,
+  sequences: readonly ForcedSequence[]
+): readonly CausalLink[] {
+  const merged = mergedAdjacentForcedSequences(triggerPly, alreadyIncluded, sequences);
+  return linksFromMergedSequences(merged, alreadyIncluded, (p) => p < triggerPly, 'same-sequence');
+}
+
+/**
+ * Phase 23C — continuous forced-sequence consequents.
+ *
+ * The exact forward mirror of continuousForcedSequenceAntecedents above,
+ * justified by Phase 23B's read-only audit: the base walk only ever visits
+ * the one ForcedSequence already containing a visited ply, so a forcing
+ * sequence recorded as several back-to-back records (game_11's five
+ * consecutive checks) stops dead at the first boundary even when the very
+ * next ForcedSequence starts exactly where it ended. Kept as its own
+ * 'adjacent-forced-sequence' link type — never 'same-sequence' — so this
+ * transitively-merged relationship stays auditable apart from the base
+ * walk's own literal membership fact, and never blurs into
+ * 'tactical-continuity' or 'unrefuted-threat-bridge'. Deliberately NOT
+ * mirrored with a forward tactical-continuity or quiet-bridge walk: Phase
+ * 23B found neither justified on the current corpus.
+ */
+function continuousForcedSequenceConsequents(
+  triggerPly: number,
+  alreadyIncluded: ReadonlySet<number>,
+  sequences: readonly ForcedSequence[]
+): readonly CausalLink[] {
+  const merged = mergedAdjacentForcedSequences(triggerPly, alreadyIncluded, sequences);
+  return linksFromMergedSequences(merged, alreadyIncluded, (p) => p > triggerPly, 'adjacent-forced-sequence');
 }
 
 /** Every square a TacticalMotifInstance's own geometry names — its one shared vocabulary with any other motif or move. */
@@ -552,6 +601,25 @@ export function buildConsequenceChain(
     consequenceAtPly: cc?.evaluationConsequence.atPly ?? triggerPly
   });
 
+  // Phase 23C — consequent-side ForcedSequence adjacency, added ONLY to the
+  // displayed consequents AFTER payoff/arrivedAtLastPly/reachesResult above
+  // are already fixed from the exact same values Phase 23A computed them
+  // from. This is deliberate, not an oversight: buildConsequenceChain is
+  // called once per CANDIDATE turning point by storyCandidates.ts's own
+  // ranking pass (buildStoryCandidates), and tierFor()/compareCandidates()
+  // both read reachesResult directly — so letting this extension feed
+  // chainEndPly/arrivedAtLastPly would risk promoting some OTHER candidate's
+  // tier or winning it a tie-break it did not previously win, silently
+  // changing which turning point gets selected as the central conflict. An
+  // earlier version of this code did exactly that (verified against the real
+  // corpus: it flipped game_14's selected turning point). Keeping this
+  // strictly downstream of payoff/reachesResult, exactly like Phase 22A's
+  // antecedent extensions are strictly excluded from them, is what makes
+  // this purely additional contextual evidence rather than a claim about
+  // what the chain resolved to.
+  const seqConsequentLinks = continuousForcedSequenceConsequents(triggerPly, new Set(consequentsByPly.keys()), understanding.sequences);
+  const displayConsequents = [...consequents, ...seqConsequentLinks].sort((a, b) => a.ply - b.ply);
+
   // Phase 16 — chess-fact classification, applied AFTER chain membership is
   // fixed. This is deliberately the last step: facts describe plies the chain
   // already contains on structural evidence, and must never be able to pull a
@@ -567,11 +635,13 @@ export function buildConsequenceChain(
     triggerPly,
     ...(triggerFacts !== undefined ? { triggerFacts } : {}),
     antecedents: enrichedAntecedents.map(withFacts),
-    consequents: consequents.map(withFacts),
+    consequents: displayConsequents.map(withFacts),
     payoff,
     // Running out of plies is not the same as explaining the result. A chain
     // "reaches the result" only when it arrived at an ending we can actually
-    // name — otherwise there is no result for it to have explained.
+    // name — otherwise there is no result for it to have explained. Computed
+    // from arrivedAtLastPly/payoff above, never from displayConsequents —
+    // see the Phase 23C comment above for exactly why that split matters.
     reachesResult: arrivedAtLastPly && payoff.kind !== 'material-settled' && payoff.kind !== 'eval-settled' && payoff.kind !== 'unresolved',
     evidence: {
       basis: 'chess-rule',

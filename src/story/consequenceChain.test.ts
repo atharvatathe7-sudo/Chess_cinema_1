@@ -730,3 +730,299 @@ describe('Phase 23A — single-use unrefuted-threat bridge', () => {
     expect(cc.mechanismVerified).toBe(false);
   });
 });
+
+describe('Phase 23C — continuous forced-sequence consequents (forward mirror of Phase 22A)', () => {
+  function evalPly(n: number, cp: number, overrides: Partial<PlyAnalysis> = {}): PlyAnalysis {
+    return plyAnalysis(n, { evaluationBefore: { kind: 'cp', cp }, evaluationAfter: { kind: 'cp', cp }, ...overrides });
+  }
+
+  it('1-4. positive: a ForcedSequence starting exactly at trigger.endPly+1 becomes consequent evidence, tagged adjacent-forced-sequence', () => {
+    const seqA = forcedSequence('seq-a', [10, 11], 'check'); // touches the trigger (11)
+    const seqB = forcedSequence('seq-b', [12, 13], 'check'); // 11 + 1 === 12
+    const understanding = understandingFrom({
+      plies: [],
+      sequences: [seqA, seqB],
+      turningPoints: [turningPoint(11, 'decisive-swing', causeConsequence(11), 400)]
+    });
+    const analysis = analysisFrom([10, 11, 12, 13].map((p) => evalPly(p, 0)));
+
+    const chain = buildConsequenceChain(11, understanding, analysis, unknownOutcome());
+
+    expect(chain.consequents.map((l) => l.ply)).toEqual([12, 13]);
+    expect(chain.consequents.every((l) => l.linkType === 'adjacent-forced-sequence')).toBe(true);
+    expect(chain.consequents.every((l) => l.evidenceId === 'seq-b')).toBe(true);
+  });
+
+  it('5. multiple immediately adjacent sequences continue forward, each contributing its own evidenceId', () => {
+    const seqA = forcedSequence('seq-a', [10, 11], 'check');
+    const seqB = forcedSequence('seq-b', [12, 13], 'check');
+    const seqC = forcedSequence('seq-c', [14, 15], 'check');
+    const understanding = understandingFrom({
+      plies: [],
+      sequences: [seqA, seqB, seqC],
+      turningPoints: [turningPoint(11, 'decisive-swing', causeConsequence(11), 400)]
+    });
+    const analysis = analysisFrom([10, 11, 12, 13, 14, 15].map((p) => evalPly(p, 0)));
+
+    const chain = buildConsequenceChain(11, understanding, analysis, unknownOutcome());
+
+    expect(chain.consequents.map((l) => l.ply)).toEqual([12, 13, 14, 15]);
+    expect(chain.consequents.find((l) => l.ply === 12)!.evidenceId).toBe('seq-b');
+    expect(chain.consequents.find((l) => l.ply === 14)!.evidenceId).toBe('seq-c');
+  });
+
+  it('6. negative: a sequence starting at trigger.endPly+2 is not connected', () => {
+    const seqA = forcedSequence('seq-a', [10, 11], 'check');
+    const seqB = forcedSequence('seq-b', [13, 14], 'check'); // 11 + 2, not +1
+    const understanding = understandingFrom({
+      plies: [],
+      sequences: [seqA, seqB],
+      turningPoints: [turningPoint(11, 'decisive-swing', causeConsequence(11), 400)]
+    });
+    const analysis = analysisFrom([10, 11, 12, 13, 14].map((p) => evalPly(p, 0)));
+
+    const chain = buildConsequenceChain(11, understanding, analysis, unknownOutcome());
+    expect(chain.consequents).toEqual([]);
+  });
+
+  it('7. negative: a sequence starting at trigger.endPly+3 is not connected', () => {
+    const seqA = forcedSequence('seq-a', [10, 11], 'check');
+    const seqB = forcedSequence('seq-b', [14, 15], 'check'); // 11 + 3
+    const understanding = understandingFrom({
+      plies: [],
+      sequences: [seqA, seqB],
+      turningPoints: [turningPoint(11, 'decisive-swing', causeConsequence(11), 400)]
+    });
+    const analysis = analysisFrom([10, 11, 12, 13, 14, 15].map((p) => evalPly(p, 0)));
+
+    const chain = buildConsequenceChain(11, understanding, analysis, unknownOutcome());
+    expect(chain.consequents).toEqual([]);
+  });
+
+  it('8. negative: no ForcedSequence at all touches the trigger — stop, exactly Phase 23A baseline behaviour', () => {
+    const understanding = understandingFrom({
+      plies: [],
+      sequences: [],
+      turningPoints: [turningPoint(11, 'decisive-swing', causeConsequence(11), 400)]
+    });
+    const analysis = analysisFrom([11, 12].map((p) => evalPly(p, 0)));
+
+    const chain = buildConsequenceChain(11, understanding, analysis, unknownOutcome());
+    expect(chain.consequents).toEqual([]);
+  });
+
+  it('9. negative: an unrelated nearby motif is irrelevant to this extension', () => {
+    const seqA = forcedSequence('seq-a', [10, 11], 'check');
+    const unrelatedMotif = tacticalMotif('m-12', 12, 'fork', 'h3', ['h7']);
+    const understanding = understandingFrom({
+      plies: [],
+      sequences: [seqA],
+      motifs: [unrelatedMotif],
+      turningPoints: [turningPoint(11, 'decisive-swing', causeConsequence(11), 400)]
+    });
+    const analysis = analysisFrom([10, 11, 12].map((p) => evalPly(p, 0)));
+
+    const chain = buildConsequenceChain(11, understanding, analysis, unknownOutcome());
+    expect(chain.consequents).toEqual([]);
+  });
+
+  it('10. negative: square overlap alone (no adjacent ForcedSequence) does not trigger this extension — no forward tactical-continuity exists', () => {
+    const seqA = forcedSequence('seq-a', [10, 11], 'check');
+    // ply 12's motif shares the trigger's own move-destination square, but no
+    // ForcedSequence covers ply 12 at all.
+    const triggerMotif = tacticalMotif('m-11', 11, 'skewer', 'b8', ['b5']);
+    const laterMotif = tacticalMotif('m-12', 12, 'fork', 'b8', ['a1', 'h1']);
+    const understanding = understandingFrom({
+      plies: [],
+      sequences: [seqA],
+      motifs: [triggerMotif, laterMotif],
+      turningPoints: [turningPoint(11, 'decisive-swing', causeConsequence(11), 400)]
+    });
+    const analysis = analysisFrom([
+      evalPly(10, 0),
+      plyAnalysis(11, { movePlayedUci: 'a8b8', evaluationBefore: { kind: 'cp', cp: 0 }, evaluationAfter: { kind: 'cp', cp: 0 } }),
+      evalPly(12, 0)
+    ]);
+
+    const chain = buildConsequenceChain(11, understanding, analysis, unknownOutcome());
+    expect(chain.consequents).toEqual([]);
+  });
+
+  it('11. negative: tactical motif continuity alone, without ForcedSequence adjacency, does not trigger this extension', () => {
+    // No ForcedSequence touches the trigger at all — only a geometrically
+    // connected motif follows it. Mirrors the game_15-style shape Phase 23B
+    // flagged as NOT safe to fold into a generic rule; this extension must
+    // never reach it regardless.
+    const triggerMotif = tacticalMotif('m-11', 11, 'fork', 'e4', ['f2', 'd6']);
+    const followingMotif = tacticalMotif('m-12', 12, 'discovery', 'e2', ['e6'], { squares: { attacker: 'e2', targets: ['e6'], throughSquare: 'e4' } });
+    const understanding = understandingFrom({
+      plies: [],
+      sequences: [],
+      motifs: [triggerMotif, followingMotif],
+      turningPoints: [turningPoint(11, 'decisive-swing', causeConsequence(11), 400)]
+    });
+    const analysis = analysisFrom([evalPly(11, 0), evalPly(12, 0)]);
+
+    const chain = buildConsequenceChain(11, understanding, analysis, unknownOutcome());
+    expect(chain.consequents).toEqual([]);
+  });
+
+  it('12. game_15-style final-ply consequence is never pulled in by this rule absent real ForcedSequence adjacency', () => {
+    const understanding = understandingFrom({
+      plies: [],
+      sequences: [],
+      turningPoints: [turningPoint(42, 'decisive-swing', causeConsequence(42, { evaluationConsequence: { atPly: 42, swingCp: -659 } }), 400)]
+    });
+    const analysis = analysisFrom([evalPly(42, -659), evalPly(43, -659)]);
+
+    const chain = buildConsequenceChain(42, understanding, analysis, unknownOutcome());
+    expect(chain.consequents).toEqual([]);
+    expect(chain.payoff).toEqual({ kind: 'eval-settled', atPly: 42, finalSwingCp: -659 });
+  });
+
+  it('13. game_11 shape regression: sequence 85-86 (trigger) + adjacent sequence 87-88 → consequents [87,88], payoff untouched', () => {
+    const seq1 = forcedSequence('sequence-11', [85, 86], 'check');
+    const seq2 = forcedSequence('sequence-12', [87, 88], 'check');
+    const cc = causeConsequence(86, { evaluationConsequence: { atPly: 86, swingCp: -307 } });
+    const understanding = understandingFrom({
+      plies: [],
+      sequences: [seq1, seq2],
+      turningPoints: [turningPoint(86, 'mate-appeared', cc, 907)]
+    });
+    // lastPly is 90 — well past the merged run's own end (88) — exactly
+    // game_11's own shape, so arrivedAtLastPly must stay false.
+    const analysis = analysisFrom([85, 86, 87, 88, 89, 90].map((p) => evalPly(p, 700)));
+
+    const chain = buildConsequenceChain(86, understanding, analysis, unknownOutcome());
+
+    expect(chain.consequents.map((l) => l.ply)).toEqual([87, 88]);
+    expect(chain.consequents.every((l) => l.linkType === 'adjacent-forced-sequence')).toBe(true);
+    expect(chain.reachesResult).toBe(false);
+    expect(chain.payoff).toEqual({ kind: 'eval-settled', atPly: 86, finalSwingCp: -307 });
+  });
+
+  it('13b. game_14 regression: a candidate whose OWN sequence merely happens to reach the true last ply via this extension must not gain reachesResult/payoff-arrival — an earlier version of this code let this flip which turning point storyCandidates.ts selects', () => {
+    // The exact shape that broke game_14: this trigger's own ForcedSequence
+    // is immediately adjacent to a LATER one that runs all the way to the
+    // game's actual last ply. Before the fix, that made chainEndPly reach
+    // lastPly and flipped arrivedAtLastPly/reachesResult/payoff to the
+    // terminal branch for a candidate that never should have gotten it.
+    const seqAtTrigger = forcedSequence('seq-4', [10, 11], 'material-forced-recapture'); // touches the trigger (11)
+    const laterAdjacentSeq = forcedSequence('seq-5', [12, 13], 'check'); // reaches lastPly (13)
+    const cc = causeConsequence(11, { evaluationConsequence: { atPly: 11, swingCp: -42 }, materialConsequence: { atPly: 11, netMaterialChange: 500 } });
+    const understanding = understandingFrom({
+      plies: [],
+      sequences: [seqAtTrigger, laterAdjacentSeq],
+      turningPoints: [turningPoint(11, 'irreversible-material-loss', cc, 392)]
+    });
+    const outcome = unknownOutcome({ result: '0-1', termination: 'resignation', source: 'termination-tag', confidence: 0.9 });
+    const analysis = analysisFrom([10, 11, 12, 13].map((p) => evalPly(p, 0)));
+
+    const chain = buildConsequenceChain(11, understanding, analysis, outcome);
+
+    // The richer display context is still there...
+    expect(chain.consequents.map((l) => l.ply)).toEqual([12, 13]);
+    expect(chain.consequents.some((l) => l.linkType === 'adjacent-forced-sequence')).toBe(true);
+    // ...but it must NOT have promoted this chain into "reached the result".
+    // Before the fix this was true and payoff.kind was 'off-board-result'.
+    expect(chain.reachesResult).toBe(false);
+    expect(chain.payoff).toEqual({ kind: 'material-settled', atPly: 11, netMaterialChange: 500 });
+  });
+
+  it('13c. game_14 regression at the selection level: a lower-significance candidate must not out-rank a higher-significance one merely because this extension reaches the true last ply', () => {
+    // tp-45-shape: lower significance, its own sequence is adjacent to one
+    // reaching the actual last ply. tp-47-shape: higher significance, is
+    // itself the last forced sequence and already reaches the result
+    // honestly. Before the fix, tp-45-shape's chain.reachesResult flipped to
+    // true, tying it with tp-47-shape on tier, and materialMagnitude (500 vs
+    // 0) then won the tie-break — selecting the WRONG turning point.
+    const seqAtLowSig = forcedSequence('seq-4', [8, 9], 'material-forced-recapture'); // touches tp-A (9)
+    const seqReachingEnd = forcedSequence('seq-5', [10, 11], 'check'); // adjacent, reaches lastPly (11)
+    const lowSigCc = causeConsequence(9, {
+      evaluationConsequence: { atPly: 9, swingCp: -42 },
+      materialConsequence: { atPly: 9, netMaterialChange: 500 },
+      resolution: 'material-gain'
+    });
+    const highSigCc = causeConsequence(11, {
+      evaluationConsequence: { atPly: 11, swingCp: -211 },
+      materialConsequence: { atPly: 11, netMaterialChange: 0 },
+      resolution: 'repelled'
+    });
+    const understanding = understandingFrom({
+      plies: [],
+      sequences: [seqAtLowSig, seqReachingEnd],
+      turningPoints: [
+        turningPoint(9, 'irreversible-material-loss', lowSigCc, 392), // lower significance, like tp-45
+        turningPoint(11, 'decisive-swing', highSigCc, 411) // higher significance, like tp-47
+      ],
+      // Gate 1 admissibility needs a real, persisting advantage for each
+      // candidate: material for tp-9 (matching its own materialConsequence),
+      // evaluation for tp-11 (it is the game's own last ply, so nothing need
+      // persist beyond it).
+      gameArc: {
+        openingEndPly: 0,
+        middlegameEndPly: 0,
+        materialTrajectory: [8, 9, 10, 11].map((p) => ({ ply: p, materialDiff: p >= 9 ? 500 : 0 })),
+        evidence: { basis: 'chess-rule', sourcePlies: [8, 9, 10, 11], note: 'fixture arc' }
+      }
+    });
+    const outcome = unknownOutcome({ result: '0-1', termination: 'resignation', source: 'termination-tag', confidence: 0.9 });
+    const analysis = analysisFrom([
+      evalPly(8, 0),
+      evalPly(9, 0),
+      evalPly(10, 0),
+      plyAnalysis(11, { evaluationBefore: { kind: 'cp', cp: 0 }, evaluationAfter: { kind: 'cp', cp: -211 } })
+    ]);
+
+    const result = selectCentralConflict(understanding, analysis, outcome, DEFAULT_STORY_SETTINGS);
+
+    expect(result.centralConflict?.primaryTurningPointId).toBe('tp-11');
+  });
+
+  it('14. Phase 23A antecedent threat-bridge behaviour is unaffected by this consequent-side change', () => {
+    const FORK_11 = tacticalMotif('m-11', 11, 'fork', 'b7', ['a8', 'b8']);
+    const BATTERY_12 = tacticalMotif('m-12', 12, 'battery', 'a8', ['d8']);
+    const FORK_13 = tacticalMotif('m-13', 13, 'fork', 'b7', ['a8', 'd7']);
+    const SKEWER_14 = tacticalMotif('m-14', 14, 'skewer', 'b8', ['b5'], {
+      squares: { attacker: 'b8', targets: ['b5'], throughSquare: 'b7' }
+    });
+    const threat = threatRecord('threat-9-0', 9, 'w', 'material-winning-threat', 'b7', { targetPiece: 'p', netMaterialIfExecuted: 100 });
+    const understanding = understandingFrom({
+      plies: [],
+      motifs: [FORK_11, BATTERY_12, FORK_13, SKEWER_14],
+      threats: [threat],
+      turningPoints: [turningPoint(14, 'decisive-swing', causeConsequence(14, { mechanism: null, mechanismVerified: false }), 400)]
+    });
+    const analysis = analysisFrom(
+      [
+        { n: 9, uci: 'd1b3' },
+        { n: 10, uci: 'g8f6' },
+        { n: 11, uci: 'b3b7' },
+        { n: 12, uci: 'b8d7' },
+        { n: 13, uci: 'd7b5' },
+        { n: 14, uci: 'a8b8' }
+      ].map(({ n, uci }) => plyAnalysis(n, { movePlayedUci: uci, fenBefore: FEN }))
+    );
+
+    const chain = buildConsequenceChain(14, understanding, analysis, unknownOutcome());
+    expect(chain.antecedents.map((l) => l.ply)).toEqual([9, 10, 11, 12, 13]);
+    expect(chain.antecedents.filter((l) => l.linkType === 'unrefuted-threat-bridge').map((l) => l.ply)).toEqual([9, 10]);
+  });
+
+  it('15. mechanism verification stays completely untouched by richer consequent evidence', () => {
+    const seqA = forcedSequence('seq-a', [10, 11], 'check');
+    const seqB = forcedSequence('seq-b', [12, 13], 'check');
+    const cc = causeConsequence(11, { mechanism: null, mechanismVerified: false });
+    const understanding = understandingFrom({
+      plies: [],
+      sequences: [seqA, seqB],
+      turningPoints: [turningPoint(11, 'decisive-swing', cc, 400)]
+    });
+    const analysis = analysisFrom([10, 11, 12, 13].map((p) => evalPly(p, 0)));
+
+    const chain = buildConsequenceChain(11, understanding, analysis, unknownOutcome());
+    expect(chain.consequents.length).toBeGreaterThan(0);
+    expect(cc.mechanism).toBeNull();
+    expect(cc.mechanismVerified).toBe(false);
+  });
+});

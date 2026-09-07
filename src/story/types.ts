@@ -95,7 +95,22 @@ export type StructuralLinkType =
    * cascades uncontrollably, so this evidence class must stay separately
    * auditable from both.
    */
-  | 'unrefuted-threat-bridge';
+  | 'unrefuted-threat-bridge'
+  /**
+   * Phase 23C — the consequent-side mirror of Phase 22A's
+   * continuousForcedSequenceAntecedents: a ForcedSequence immediately
+   * adjacent (previous.endPly + 1 === next.startPly) to whichever sequence
+   * already touches the trigger or an established consequent, walked
+   * FORWARD only. Kept distinct from 'same-sequence' (which names literal
+   * membership in the one ForcedSequence already touching a visited ply)
+   * so an audit can tell "the base walk found this" from "this sequence was
+   * merged in because it started exactly where the last one ended" — the
+   * same reasoning 'tactical-continuity' and 'unrefuted-threat-bridge' each
+   * got their own type for. Never square- or motif-based, never a quiet-ply
+   * tolerance: the only relationship this represents is the one exact
+   * ForcedSequence adjacency fact.
+   */
+  | 'adjacent-forced-sequence';
 
 /**
  * Phase 16 — WHAT happened in chess terms at a ply, as opposed to how we know

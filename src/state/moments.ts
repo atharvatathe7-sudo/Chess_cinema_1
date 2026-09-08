@@ -692,11 +692,27 @@ export function deriveCinematicMoments(
   }
 
   const timing = buildPlyTimingMap(timeline);
+  const timedPlies = [...timing.keys()];
+  const minTimedPly = timedPlies.length > 0 ? Math.min(...timedPlies) : null;
+  const maxTimedPly = timedPlies.length > 0 ? Math.max(...timedPlies) : null;
   const moments: CinematicMoment[] = [];
 
   for (const group of groups) {
-    const fromPly = Math.min(...group.map((d) => d.fromPly));
-    const toPly = Math.max(...group.map((d) => d.toPly));
+    if (minTimedPly === null || maxTimedPly === null) continue;
+    const rawFromPly = Math.min(...group.map((d) => d.fromPly));
+    const rawToPly = Math.max(...group.map((d) => d.toPly));
+    // Phase 24 fix — a group's evidence range (e.g. Phase 23C's enriched
+    // consequents) may extend past what the clip-window-bounded Timeline
+    // actually renders. Rather than dropping the whole moment when the raw
+    // toPly has no timing entry (the old behavior), clamp to the plies the
+    // Timeline actually has — mirroring the existing clamp-not-drop
+    // philosophy in director/lowerToTimeline.ts's
+    // clampCameraDirectivesToWindow/clampSpanDirectivesToWindow. Caption
+    // text is untouched: labelFor/reasonFor below read the group's own
+    // directives, never fromPly/toPly.
+    const fromPly = Math.max(rawFromPly, minTimedPly);
+    const toPly = Math.min(rawToPly, maxTimedPly);
+    if (fromPly > toPly) continue;
     const start = timing.get(fromPly);
     const end = timing.get(toPly);
     if (!start || !end) continue;

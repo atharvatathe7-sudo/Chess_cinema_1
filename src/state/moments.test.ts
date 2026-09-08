@@ -1595,3 +1595,116 @@ describe('non-overlapping window invariant (M11)', () => {
     }
   });
 });
+
+/**
+ * Phase 24 fix — Game 11's Phase 23C condition.
+ *
+ * Phase 23C's continuousForcedSequenceConsequents extends
+ * ConsequenceChain.consequents past whatever ply the clip window/Timeline
+ * actually ends at (director/clipWindow.ts's payoffPlyOf is architecturally
+ * blind to the enriched consequents for most payoff kinds). For Game 11 this
+ * left the climax beat's central-conflict-highlight directive spanning
+ * fromPly=74..toPly=88 while the rendered Timeline (clip window endPly=86)
+ * only has timing for plies up to 86 — buildPlyTimingMap has no entry for
+ * 87/88, so the old `if (!start || !end) continue` silently dropped the
+ * WHOLE moment group (Game 11's only caption), rather than just the part
+ * that overruns the window.
+ *
+ * These tests reproduce that exact shape directly (a directive whose toPly
+ * exceeds the last ply the Timeline has timing for) and assert the fixed
+ * clamp-not-drop behavior: the moment survives, its plies are clamped to
+ * what the Timeline actually renders, and its caption text is byte-identical
+ * to what an equivalent directive already ending in-window would produce
+ * (centralConflictReason/labelFor never read fromPly/toPly, only the
+ * StoryPlan/GameUnderstanding evidence — so clamping cannot alter truthfulness).
+ */
+describe('Phase 24 fix — clamps out-of-window moment groups instead of dropping them (Game 11)', () => {
+  const mechanism: CauseConsequenceRecord['mechanism'] = 'positional';
+  const resolution: CauseConsequenceRecord['resolution'] = 'material-gain';
+
+  function game11ShapeStory(): StoryPlan {
+    return storyFixture({ beats: [climaxBeat('beat-climax-74', 74, 'tp-74')] });
+  }
+
+  function game11ShapeUnderstanding(): GameUnderstanding {
+    return understandingFixture({ turningPoints: [turningPoint('tp-74', 74, mechanism, resolution)] });
+  }
+
+  it('reproduces Game 11: a climax highlight enriched past the clip-window end (74->88) is clamped to the rendered range (74->86), not dropped', () => {
+    // Timeline covers exactly plies 1..86 (the clip window's own endPly for
+    // Game 11) — ply 87/88 have no MoveBeat/timing entry at all, matching
+    // buildPlyTimingMap's real output for a windowed Scene.
+    const timeline = timelineFromDurations(Array.from({ length: 86 }, () => 300));
+    const story = game11ShapeStory();
+    const understanding = game11ShapeUnderstanding();
+    const plan = cinematicPlan([directive('central-conflict-highlight', 74, 88, { kind: 'beat', id: 'beat-climax-74' })]);
+
+    const moments = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, understanding, story);
+
+    // Old (buggy) behavior: [] — the whole moment silently disappears.
+    expect(moments).toHaveLength(1);
+    const moment = moments[0]!;
+    expect(moment.kind).toBe('central-conflict-highlight');
+    expect(moment.fromPly).toBe(74);
+    expect(moment.toPly).toBe(86);
+    expect(moment.untilMs).toBe(timeline.scenes[0]!.durationMs);
+    expect(moment.targetTimeMs).toBeLessThan(moment.untilMs);
+  });
+
+  it('preserves caption text exactly: a clamped (74->88) group produces the same label/reason as an unenriched (74->86) group', () => {
+    const timeline = timelineFromDurations(Array.from({ length: 86 }, () => 300));
+    const story = game11ShapeStory();
+    const understanding = game11ShapeUnderstanding();
+
+    const enriched = deriveCinematicMoments(
+      cinematicPlan([directive('central-conflict-highlight', 74, 88, { kind: 'beat', id: 'beat-climax-74' })]),
+      timeline,
+      QUIET_ANALYSIS,
+      understanding,
+      story
+    );
+    const unenriched = deriveCinematicMoments(
+      cinematicPlan([directive('central-conflict-highlight', 74, 86, { kind: 'beat', id: 'beat-climax-74' })]),
+      timeline,
+      QUIET_ANALYSIS,
+      understanding,
+      story
+    );
+
+    expect(enriched).toHaveLength(1);
+    expect(unenriched).toHaveLength(1);
+    expect(enriched[0]!.label).toBe(unenriched[0]!.label);
+    expect(enriched[0]!.reason).toBe(unenriched[0]!.reason);
+    expect(enriched[0]!.narratives).toEqual(unenriched[0]!.narratives);
+    // Once clamped, the two produce an identical moment window too.
+    expect(enriched[0]!.fromPly).toBe(unenriched[0]!.fromPly);
+    expect(enriched[0]!.toPly).toBe(unenriched[0]!.toPly);
+    expect(enriched[0]!.atMs).toBe(unenriched[0]!.atMs);
+    expect(enriched[0]!.untilMs).toBe(unenriched[0]!.untilMs);
+  });
+
+  it('clamps the other direction too: a fromPly before the window start is pulled up to the first timed ply', () => {
+    // Not Game 11's own shape (its antecedents never fell outside the
+    // window), but the same clamp-not-drop mechanism is symmetric by
+    // construction — covered here so both directions of the fix are tested.
+    const timeline = timelineFromDurations(Array.from({ length: 10 }, () => 300));
+    const plan = cinematicPlan([directive('threat-refutation-arrow', -5, 3)]);
+    const moments = deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, EMPTY_UNDERSTANDING, EMPTY_STORY);
+
+    expect(moments).toHaveLength(1);
+    expect(moments[0]!.fromPly).toBe(1);
+    expect(moments[0]!.toPly).toBe(3);
+  });
+
+  it('still drops a group that is entirely outside the rendered range on both ends (no partial rescue)', () => {
+    const timeline = timelineFromDurations(Array.from({ length: 10 }, () => 300));
+    const plan = cinematicPlan([directive('threat-refutation-arrow', 200, 205)]);
+    expect(deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, EMPTY_UNDERSTANDING, EMPTY_STORY)).toEqual([]);
+  });
+
+  it('does not crash and yields no moments when the Timeline has no timed plies at all', () => {
+    const timeline = timelineFromDurations([]);
+    const plan = cinematicPlan([directive('threat-refutation-arrow', 1, 1)]);
+    expect(deriveCinematicMoments(plan, timeline, QUIET_ANALYSIS, EMPTY_UNDERSTANDING, EMPTY_STORY)).toEqual([]);
+  });
+});
